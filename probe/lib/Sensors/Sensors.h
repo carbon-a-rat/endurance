@@ -12,8 +12,10 @@ public:
       : sensor(I2C_MODE, address), i2cAddress(address) {}
 
   bool initialize() {
-    sensor.settings.accelRange = 4;  // ±4g
-    sensor.settings.gyroRange = 245; // ±245 dps
+    sensor.settings.accelRange = 16;       // ±16 g
+    sensor.settings.accelSampleRate = 104; // 104 Hz
+    sensor.settings.gyroRange = 245;       // ±245 dps
+    sensor.settings.gyroSampleRate = 104;  // 104 Hz
     return sensor.begin() == 0;
   }
 
