@@ -5,7 +5,7 @@
 #include <Servo.h>
 #include <espnow.h>
 
-#define GATEWAY_MAC_ADDRESS "34:AB:95:1A:75:37"
+#define GATEWAY_MAC_ADDRESS "44:17:93:0F:00:BF"
 
 struct FlightData {
   float pressure;
@@ -79,6 +79,7 @@ void batteryStateHandler(ESPBattery &b) {
 }
 
 void initializeSensors() {
+  Serial.println("Initializing sensors...");
   if (sensor.initialize() == false) {
     Serial.println("Failed to initialize sensor!");
   } else {
@@ -98,12 +99,11 @@ void initializeSensors() {
   }
 }
 
-void printMacAdresses() {
+void printMacAddresses() {
   Serial.print("Probe MAC Address:  ");
   Serial.println(WiFi.macAddress());
   Serial.print("Gateway MAC Address:  ");
   Serial.println(GATEWAY_MAC_ADDRESS);
-  Serial.println("Initializing sensor...");
 }
 
 void sendDataToQueue(FlightData &flightData) {
@@ -172,7 +172,8 @@ void setup() {
   pinMode(LED_BUILTIN, HIGH);
   Serial.begin(115200);
   Serial.println();
-  printMacAdresses();
+
+  printMacAddresses();
 
   initializeSensors();
 
