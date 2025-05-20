@@ -47,3 +47,10 @@ This system is composed of multiple microcontrollers working together for real-t
                                ┌─────┐
                                │ pad │ ←─── Controls pneumatics, valves, etc.
                                └─────┘
+
+### TODO
+#### Probe
+- [ ] Rotate the accelerometer and gyroscope data according to the sensor orientation
+- [x] Detect apogee and deploy parachute
+- [x] Detect landing
+- [ ] Test in the field
