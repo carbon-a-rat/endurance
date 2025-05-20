@@ -16,7 +16,7 @@ This system is composed of multiple microcontrollers working together for real-t
 | Codename   | Hardware     | Role                                                                 |
 |------------|--------------|----------------------------------------------------------------------|
 | `probe`    | ESP8266      | Onboard the water rocket. Collects sensor data and communicates bidirectionally with `gateway` via ESP-NOW. |
-| `gateway`  | ESP8266      | Relay node. Exchanges data with `probe` via ESP-NOW, and forwards information to `horizon` via Serial. |
+| `gateway`  | ESP8266      | Relay node. Exchanges data with `probe` via ESP-NOW, and forwards information to `horizon` via I2C. |
 | `horizon`  | ESP8266      | Central controller (master node). Connected to Wi-Fi; acts as an HTTPS client to send data to the control server. Receives Server-Sent Events (SSE) |
 | `pad`      | Arduino Uno  | Launcher controller. Manages water/air loading and triggers the rocket launch sequence. |
 
@@ -36,13 +36,13 @@ This system is composed of multiple microcontrollers working together for real-t
                                │gateway │
                                └────────┘
                                    │
-                                Serial
+                                  I2C
                                    │
                                ┌────────┐
                                │horizon │ ──► HTTPS API Client
                                └────────┘       (death-star-command-center)
                                    │
-                                Serial
+                                  I2C
                                    │
                                ┌─────┐
                                │ pad │ ←─── Controls pneumatics, valves, etc.
