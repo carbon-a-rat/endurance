@@ -5,6 +5,7 @@
 #define PROBE_MAC_ADDRESS "4C:75:25:03:EA:DC"
 
 struct FlightData {
+  long unsigned timestamp;
   float pressure;
   float temperature;
   float altitude;
