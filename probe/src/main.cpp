@@ -6,8 +6,15 @@
 #include <espnow.h>
 
 #define GATEWAY_MAC_ADDRESS "44:17:93:0F:00:BF"
+#define DEPLOYMENT_ACC_THRESHOLD 1.5
+#define DEPLOYMENT_TIME_THRESHOLD 10
+
+#define LANDING_ACC_MIN_THRESHOLD 0.8
+#define LANDING_ACC_MAX_THRESHOLD 1.2
+#define LANDING_TIME_THRESHOLD 3
 
 struct FlightData {
+  long unsigned timestamp;
   float pressure;
   float temperature;
   float altitude;
@@ -30,6 +37,14 @@ struct ProbeState {
   uint16_t packetQueueSize;
   uint16_t packetQueueMaxSize;
   bool sendingPacket;
+  long unsigned launchTime = 0;
+  long unsigned deploymentTime = 0;
+  long unsigned landingTime = 0;
+};
+
+struct SensorZeroValues {
+  float altitude;
+  float ax, ay, az;
 };
 
 Servo servo;
@@ -50,7 +65,9 @@ bool shouldPrintFlightData = false;
 ProbeState probeState = {false, false, false,
                          0,     {0},   NULL,
                          0,     0,     expectedFlightTime *dataSendFrequency,
-                         false};
+                         false, 0,     0};
+
+SensorZeroValues sensorZeroValues = {0, 0, 0, 0};
 
 long unsigned t0 = 0;
 long unsigned lastSendTime = 0;
@@ -151,6 +168,99 @@ void onDataSent(unsigned char *mac_addr, u8 status) {
   probeState.sendingPacket = false;
 }
 
+void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
+  if (data[0] == 'G' && data[1] == 'O') {
+    Serial.println("Received GO command");
+    probeState.isFlying = true;
+    probeState.launchTime = millis();
+  }
+}
+
+void rotateAccGyroData(float &ax, float &ay, float &az, float &gx, float &gy,
+                       float &gz) {
+  // Rotate the accelerometer and gyroscope data according to the sensor's
+  // orientation
+  float tempAx = ax;
+  float tempAy = ay;
+  float tempAz = az;
+  float tempGx = gx;
+  float tempGy = gy;
+  float tempGz = gz;
+  // TODO: Implement the rotation logic based on the sensor's orientation
+
+  // For now, just copy the values
+  ax = tempAx;
+  ay = tempAy;
+  az = tempAz;
+  gx = tempGx;
+  gy = tempGy;
+  gz = tempGz;
+}
+
+void deployementCheck(FlightData &flightData) {
+  if (flightData.isFlying && !flightData.isDeployed &&
+      flightData.timestamp > DEPLOYMENT_TIME_THRESHOLD) {
+    uint8_t accNorm =
+        sqrt(flightData.ax * flightData.ax + flightData.ay * flightData.ay +
+             flightData.az * flightData.az);
+    if (accNorm < DEPLOYMENT_ACC_THRESHOLD) {
+      probeState.isDeployed = true;
+      probeState.deploymentTime = millis();
+      servo.write(180); // Deploy the parachute
+      Serial.println("Parachute deployed!");
+    }
+  }
+}
+
+void landingCheck(FlightData &flightData) {
+  if (flightData.isFlying && flightData.isDeployed &&
+      millis() - probeState.deploymentTime > LANDING_TIME_THRESHOLD) {
+    uint8_t accNorm =
+        sqrt(flightData.ax * flightData.ax + flightData.ay * flightData.ay +
+             flightData.az * flightData.az);
+    if (accNorm > LANDING_ACC_MIN_THRESHOLD &&
+        accNorm < LANDING_ACC_MAX_THRESHOLD) {
+      probeState.isLanded = true;
+      probeState.isFlying = false;
+      probeState.landingTime = millis();
+      servo.write(0); // Bring the servo back to the initial position
+      Serial.println("Landed!");
+    }
+  }
+}
+
+void resetFlightCheck() {
+  if (probeState.isLanded && millis() - probeState.landingTime > 1000) {
+    probeState.isDeployed = false;
+    probeState.isFlying = false;
+    probeState.isLanded = false;
+    probeState.launchTime = 0;
+    probeState.deploymentTime = 0;
+    probeState.landingTime = 0;
+  }
+}
+
+FlightData getFlightData() {
+  FlightData flightData;
+  flightData.timestamp = millis() - probeState.launchTime;
+  sensor.read(flightData.pressure, flightData.temperature, flightData.altitude);
+  accGyroSensor.read(flightData.ax, flightData.ay, flightData.az, flightData.gx,
+                     flightData.gy, flightData.gz);
+
+  flightData.batteryLevel = probeState.batteryLevel;
+
+  rotateAccGyroData(flightData.ax, flightData.ay, flightData.az, flightData.gx,
+                    flightData.gy, flightData.gz);
+
+  deployementCheck(flightData);
+  landingCheck(flightData);
+  resetFlightCheck();
+  flightData.isFlying = probeState.isFlying;
+  flightData.isDeployed = probeState.isDeployed;
+  flightData.isLanded = probeState.isLanded;
+  return flightData;
+}
+
 void initializeESPNOW() {
   Serial.println("Initializing ESP-NOW...");
   WiFi.mode(WIFI_STA);
@@ -225,16 +335,8 @@ void printData(float p, float t, float a, float ax, float ay, float az,
 void loop() {
   if (millis() - lastSendTime >= dataSendDelay) {
     lastSendTime = millis();
-    FlightData flightData;
-    sensor.read(flightData.pressure, flightData.temperature,
-                flightData.altitude);
-    accGyroSensor.read(flightData.ax, flightData.ay, flightData.az,
-                       flightData.gx, flightData.gy, flightData.gz);
 
-    flightData.batteryLevel = probeState.batteryLevel;
-    flightData.isDeployed = probeState.isDeployed;
-    flightData.isFlying = probeState.isFlying;
-    flightData.isLanded = probeState.isLanded;
+    FlightData flightData = getFlightData();
 
     sendDataToQueue(flightData);
 
