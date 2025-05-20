@@ -198,7 +198,7 @@ void rotateAccGyroData(float &ax, float &ay, float &az, float &gx, float &gy,
 }
 
 void deployementCheck(FlightData &flightData) {
-  if (flightData.isFlying && !flightData.isDeployed &&
+  if (probeState.isFlying && !probeState.isDeployed &&
       flightData.timestamp > DEPLOYMENT_TIME_THRESHOLD) {
     uint8_t accNorm =
         sqrt(flightData.ax * flightData.ax + flightData.ay * flightData.ay +
@@ -213,7 +213,7 @@ void deployementCheck(FlightData &flightData) {
 }
 
 void landingCheck(FlightData &flightData) {
-  if (flightData.isFlying && flightData.isDeployed &&
+  if (probeState.isFlying && probeState.isDeployed &&
       millis() - probeState.deploymentTime > LANDING_TIME_THRESHOLD) {
     uint8_t accNorm =
         sqrt(flightData.ax * flightData.ax + flightData.ay * flightData.ay +
@@ -307,6 +307,8 @@ void setup() {
 
   t0 = millis();
   lastSendTime = t0;
+  servo.write(0); // Initial position of the servo
+  Serial.println("Setup complete.");
 }
 
 void printData(float p, float t, float a, float ax, float ay, float az,
