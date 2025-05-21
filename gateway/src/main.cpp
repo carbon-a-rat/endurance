@@ -1,21 +1,23 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
+#include <core.h>
 #include <espnow.h>
 
 #define PROBE_MAC_ADDRESS "4C:75:25:03:EA:DC"
 
-struct FlightData {
-  long unsigned timestamp;
-  float pressure;
-  float temperature;
-  float altitude;
-  float ax, ay, az;
-  float gx, gy, gz;
-  float batteryLevel;
-  bool isDeployed;
-  bool isFlying;
-  bool isLanded;
+struct GatewayState {
+  uint16_t packetQueueSize;
+  uint16_t packetQueueMaxSize;
+  uint16_t currentPacketIndex;
+  uint8_t **packetQueue;
 };
+
+// The maximum duration (in seconds) for which the gateway will store data
+// packets before data loss occurs.
+int8_t dataQueueSizeSeconds = 10;
+
+GatewayState gatewayState = {0, dataQueueSizeSeconds *dataSendFrequency, 0,
+                             NULL};
 
 bool ledState = false;
 long unsigned lastLedChangeTime;
@@ -56,6 +58,46 @@ void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
   }
 }
 
+// Initialize the packet queue in setup()
+void initializeGatewayQueue() {
+  gatewayState.packetQueue =
+      (uint8_t **)calloc(gatewayState.packetQueueMaxSize, sizeof(uint8_t *));
+  if (!gatewayState.packetQueue) {
+    Serial.println("Failed to allocate gateway packet queue!");
+    while (true)
+      delay(1000);
+  }
+}
+
+// Add a packet to the queue
+void enqueueGatewayPacket(uint8_t *packet, size_t packetSize) {
+  uint16_t newPacketIndex =
+      (gatewayState.currentPacketIndex + gatewayState.packetQueueSize) %
+      gatewayState.packetQueueMaxSize;
+  if (gatewayState.packetQueueSize < gatewayState.packetQueueMaxSize) {
+    gatewayState.packetQueue[newPacketIndex] = (uint8_t *)malloc(packetSize);
+    if (gatewayState.packetQueue[newPacketIndex]) {
+      memcpy(gatewayState.packetQueue[newPacketIndex], packet, packetSize);
+      gatewayState.packetQueueSize++;
+    } else {
+      Serial.println("Failed to allocate memory for gateway packet.");
+    }
+  } else {
+    Serial.println("Gateway packet queue is full, discarding packet.");
+  }
+}
+
+// Remove and free the first packet in the queue
+void dequeueGatewayPacket() {
+  if (gatewayState.packetQueueSize > 0) {
+    free(gatewayState.packetQueue[gatewayState.currentPacketIndex]);
+    gatewayState.packetQueue[gatewayState.currentPacketIndex] = NULL;
+    gatewayState.currentPacketIndex =
+        (gatewayState.currentPacketIndex + 1) % gatewayState.packetQueueMaxSize;
+    gatewayState.packetQueueSize--;
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.println();
@@ -77,6 +119,9 @@ void setup() {
 
   lastLedChangeTime = millis();
   pinMode(LED_BUILTIN, OUTPUT);
+
+  // Initialize the gateway packet queue
+  initializeGatewayQueue();
 }
 
 void loop() {}

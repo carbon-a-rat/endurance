@@ -3,6 +3,7 @@
 #include <ESPBattery.h>
 #include <Sensors.h>
 #include <Servo.h>
+#include <core.h>
 #include <espnow.h>
 
 #define GATEWAY_MAC_ADDRESS "44:17:93:0F:00:BF"
@@ -12,19 +13,6 @@
 #define LANDING_ACC_MIN_THRESHOLD 0.8
 #define LANDING_ACC_MAX_THRESHOLD 1.2
 #define LANDING_TIME_THRESHOLD 1000
-
-struct FlightData {
-  long unsigned timestamp;
-  float pressure;
-  float temperature;
-  float altitude;
-  float ax, ay, az;
-  float gx, gy, gz;
-  float batteryLevel;
-  bool isDeployed;
-  bool isFlying;
-  bool isLanded;
-};
 
 struct ProbeState {
   bool isDeployed;
@@ -42,11 +30,7 @@ struct ProbeState {
   long unsigned landingTime = 0;
 };
 
-struct SensorZeroValues {
-  float altitude;
-  float ax, ay, az;
-};
-
+float baseAltitude;
 Servo servo;
 int servoPin = 14;
 
@@ -55,9 +39,6 @@ int batteryPin = A0;
 
 BarometerSensor sensor(0x77);
 AccGyroSensor accGyroSensor(0x6A);
-
-int dataSendFrequency = 32; // 32 Hz
-long dataSendDelay = 1000 / dataSendFrequency;
 
 long expectedFlightTime = 20;
 
@@ -69,8 +50,6 @@ ProbeState probeState = {false, false, false,
                          0,     {0},   NULL,
                          0,     0,     expectedFlightTime *dataSendFrequency,
                          false, 0,     0};
-
-SensorZeroValues sensorZeroValues = {0, 0, 0, 0};
 
 long unsigned t0 = 0;
 long unsigned lastSendTime = 0;
@@ -119,6 +98,8 @@ void initializeSensors() {
     Serial.print("I2C Address:");
     Serial.println(accGyroSensor.getI2CAddress(), HEX);
     Serial.println("Reading sensor data...");
+    float tempTemp, tempPressure;
+    sensor.read(tempPressure, tempTemp, baseAltitude);
   }
 }
 
@@ -189,6 +170,8 @@ void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
     Serial.println("Received GO command");
     probeState.isFlying = true;
     probeState.launchTime = millis();
+    float tempTemp, tempPressure;
+    sensor.read(tempPressure, tempTemp, baseAltitude); // Zero the altitude
   }
 }
 
@@ -258,6 +241,7 @@ FlightData getFlightData() {
   FlightData flightData;
   flightData.timestamp = millis() - probeState.launchTime;
   sensor.read(flightData.pressure, flightData.temperature, flightData.altitude);
+  flightData.altitude -= baseAltitude;
   accGyroSensor.read(flightData.ax, flightData.ay, flightData.az, flightData.gx,
                      flightData.gy, flightData.gz);
 
