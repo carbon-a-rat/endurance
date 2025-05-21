@@ -62,6 +62,9 @@ long dataSendDelay = 1000 / dataSendFrequency;
 long expectedFlightTime = 20;
 
 bool shouldPrintFlightData = false;
+bool shouldPrintBatteryData = true;
+bool shouldPrintNetworkData = false;
+
 ProbeState probeState = {false, false, false,
                          0,     {0},   NULL,
                          0,     0,     expectedFlightTime *dataSendFrequency,
@@ -87,12 +90,15 @@ void batteryStateHandler(ESPBattery &b) {
 
   int batteryPercentage = b.getPercentage();
   probeState.batteryLevel = batteryPercentage;
-  Serial.print("Battery Level: ");
-  Serial.print(batteryPercentage);
-  Serial.print("%, Voltage: ");
-  Serial.print(b.getVoltage());
-  Serial.print("V, State: ");
-  Serial.println(b.stateToString(b.getState()));
+
+  if (shouldPrintBatteryData) {
+    Serial.print("Battery Level: ");
+    Serial.print(batteryPercentage);
+    Serial.print("%, Voltage: ");
+    Serial.print(b.getVoltage());
+    Serial.print("V, State: ");
+    Serial.println(b.stateToString(b.getState()));
+  }
 }
 
 void initializeSensors() {
@@ -127,7 +133,9 @@ void sendDataToQueue(FlightData &flightData) {
   // Allocate memory for the packet
   uint8_t *packet = (uint8_t *)malloc(sizeof(FlightData));
   if (!packet) {
-    Serial.println("Failed to allocate memory for packet.");
+    if (shouldPrintNetworkData) {
+      Serial.println("Failed to allocate memory for packet.");
+    }
     return;
   }
   memcpy(packet, &flightData, sizeof(FlightData));
@@ -140,7 +148,9 @@ void sendDataToQueue(FlightData &flightData) {
     probeState.packetQueue[newPacketIndex] = packet;
     probeState.packetQueueSize++;
   } else {
-    Serial.println("Packet queue is full, discarding packet.");
+    if (shouldPrintNetworkData) {
+      Serial.println("Packet queue is full, discarding packet.");
+    }
     free(packet);
   }
 }
@@ -156,14 +166,20 @@ void sendDataToGateway() {
 
 void onDataSent(unsigned char *mac_addr, u8 status) {
   if (status == 0) {
-    Serial.println("Data sent successfully");
+    if (shouldPrintNetworkData) {
+      Serial.println("Data sent successfully");
+    }
+
     // Free the sent packet
     free(probeState.packetQueue[probeState.currentPacketIndex]);
     probeState.currentPacketIndex =
         (probeState.currentPacketIndex + 1) % probeState.packetQueueMaxSize;
     probeState.packetQueueSize--;
   } else {
-    Serial.println("Error sending data");
+    if (shouldPrintNetworkData) {
+      Serial.print("Error sending data, status: ");
+      Serial.println(status);
+    }
   }
   probeState.sendingPacket = false;
 }
@@ -179,22 +195,20 @@ void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
 void rotateAccGyroData(float &ax, float &ay, float &az, float &gx, float &gy,
                        float &gz) {
   // Rotate the accelerometer and gyroscope data according to the sensor's
-  // orientation
+  // orientation : upside down (180 deg about X axis)
   float tempAx = ax;
   float tempAy = ay;
   float tempAz = az;
   float tempGx = gx;
   float tempGy = gy;
   float tempGz = gz;
-  // TODO: Implement the rotation logic based on the sensor's orientation
 
-  // For now, just copy the values
   ax = tempAx;
-  ay = tempAy;
-  az = tempAz;
+  ay = -tempAy;
+  az = -tempAz;
   gx = tempGx;
-  gy = tempGy;
-  gz = tempGz;
+  gy = -tempGy;
+  gz = -tempGz;
 }
 
 void deployementCheck(FlightData &flightData) {
@@ -311,8 +325,13 @@ void setup() {
   Serial.println("Setup complete.");
 }
 
-void printData(float p, float t, float a, float ax, float ay, float az,
-               float gx, float gy, float gz) {
+void printData(float timestamp, float batteryLevel, float p, float t, float a,
+               float ax, float ay, float az, float gx, float gy, float gz) {
+  Serial.print("Timestamp: ");
+  Serial.print(timestamp);
+  Serial.print(" ms, Battery Level: ");
+  Serial.print(batteryLevel);
+  Serial.print("%, ");
   Serial.print("Pressure: ");
   Serial.print(p);
   Serial.print(" hPa, Temperature: ");
@@ -343,12 +362,13 @@ void loop() {
     sendDataToQueue(flightData);
 
     if (shouldPrintFlightData) {
-      printData(flightData.pressure, flightData.temperature,
+      printData(flightData.timestamp, flightData.batteryLevel,
+                flightData.pressure, flightData.temperature,
                 flightData.altitude, flightData.ax, flightData.ay,
                 flightData.az, flightData.gx, flightData.gy, flightData.gz);
     }
   }
   battery.loop();
   sendDataToGateway();
-  // servo.write(0-180);
+  // servo.write(0-180) for testing;
 }
