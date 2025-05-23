@@ -1,0 +1,15 @@
+{
+    "name": "endurance-core",
+    "version": "1.0.0",
+    "description": "Core library for the Endurance project, providing essential utilities and abstractions.",
+    "keywords": "endurance, core, utilities",
+    "authors": [
+        {
+            "name": "to-the-mars",
+            "email": ""
+        }
+    ],
+    "license": "GPL",
+    "frameworks": "*",
+    "platforms": "*"
+}

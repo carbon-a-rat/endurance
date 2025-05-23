@@ -6,7 +6,7 @@
 #include <core.h>
 #include <espnow.h>
 
-#define GATEWAY_MAC_ADDRESS "44:17:93:0F:00:BF"
+#define GATEWAY_MAC_ADDRESS "bc:ff:4d:40:d3:02"
 #define DEPLOYMENT_ACC_THRESHOLD 1.5
 #define DEPLOYMENT_TIME_THRESHOLD 300
 
@@ -309,34 +309,6 @@ void setup() {
   Serial.println("Setup complete.");
 }
 
-void printData(float timestamp, float batteryLevel, float p, float t, float a,
-               float ax, float ay, float az, float gx, float gy, float gz) {
-  Serial.print("Timestamp: ");
-  Serial.print(timestamp);
-  Serial.print(" ms, Battery Level: ");
-  Serial.print(batteryLevel);
-  Serial.print("%, ");
-  Serial.print("Pressure: ");
-  Serial.print(p);
-  Serial.print(" hPa, Temperature: ");
-  Serial.print(t);
-  Serial.print(" °C, Altitude: ");
-  Serial.print(a);
-  Serial.print(" m, Accelerometer: ");
-  Serial.print(ax);
-  Serial.print(", ");
-  Serial.print(ay);
-  Serial.print(", ");
-  Serial.print(az);
-  Serial.print(" Gyroscope: ");
-  Serial.print(gx);
-  Serial.print(", ");
-  Serial.print(gy);
-  Serial.print(", ");
-  Serial.print(gz);
-  Serial.println(" dps");
-}
-
 void loop() {
   if (millis() - lastSendTime >= dataSendDelay) {
     lastSendTime = millis();
@@ -346,10 +318,7 @@ void loop() {
     sendDataToQueue(flightData);
 
     if (shouldPrintFlightData) {
-      printData(flightData.timestamp, flightData.batteryLevel,
-                flightData.pressure, flightData.temperature,
-                flightData.altitude, flightData.ax, flightData.ay,
-                flightData.az, flightData.gx, flightData.gy, flightData.gz);
+      printFlightData(flightData);
     }
   }
   battery.loop();

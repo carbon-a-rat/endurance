@@ -40,24 +40,6 @@ void printMacAddresses() {
   Serial.println(WiFi.macAddress());
 }
 
-void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
-  Serial.print(", Data received: ");
-  for (int i = 0; i < len; i++) {
-    Serial.print((char)data[i]);
-  }
-  Serial.println();
-
-  if (millis() - lastLedChangeTime > 0) {
-    if (ledState) {
-      digitalWrite(LED_BUILTIN, LOW);
-    } else {
-      digitalWrite(LED_BUILTIN, HIGH);
-    }
-    ledState = !ledState;
-    lastLedChangeTime = millis();
-  }
-}
-
 // Initialize the packet queue in setup()
 void initializeGatewayQueue() {
   gatewayState.packetQueue =
@@ -95,6 +77,32 @@ void dequeueGatewayPacket() {
     gatewayState.currentPacketIndex =
         (gatewayState.currentPacketIndex + 1) % gatewayState.packetQueueMaxSize;
     gatewayState.packetQueueSize--;
+  }
+}
+
+void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
+  FlightData flightData;
+  Serial.print(", Data received: ");
+  memcpy(&flightData, data, sizeof(FlightData));
+  printFlightData(flightData);
+
+  u8_t *packet = (u8_t *)malloc(len);
+  if (packet) {
+    memcpy(packet, data, len);
+    enqueueGatewayPacket(packet, len);
+    free(packet);
+  } else {
+    Serial.println("Failed to allocate memory for received packet.");
+  }
+
+  if (millis() - lastLedChangeTime > ledBlinkDelay) {
+    if (ledState) {
+      digitalWrite(LED_BUILTIN, LOW);
+    } else {
+      digitalWrite(LED_BUILTIN, HIGH);
+    }
+    ledState = !ledState;
+    lastLedChangeTime = millis();
   }
 }
 
