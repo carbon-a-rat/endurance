@@ -14,6 +14,9 @@
 #define LANDING_ACC_MAX_THRESHOLD 1.2
 #define LANDING_TIME_THRESHOLD 1000
 
+#define SERVO_INITIAL_POSITION 0
+#define SERVO_DEPLOYED_POSITION 180
+
 struct ProbeState {
   bool isDeployed;
   bool isFlying;
@@ -173,12 +176,20 @@ void onDataSent(unsigned char *mac_addr, u8 status) {
 }
 
 void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
-  if (data[0] == 'G' && data[1] == 'O') {
+  String cmd = String((char *)data).substring(0, len);
+
+  if (cmd.startsWith("GO")) {
     Serial.println("Received GO command");
     probeState.isFlying = true;
     probeState.launchTime = millis();
     float tempTemp, tempPressure;
     sensor.read(tempPressure, tempTemp, baseAltitude); // Zero the altitude
+  } else if (cmd.startsWith("RESET")) {
+    Serial.println("Received RESET command");
+    resetFlight();
+  } else {
+    Serial.print("Unknown command: ");
+    Serial.println(cmd);
   }
 }
 
@@ -210,7 +221,7 @@ void deployementCheck(FlightData &flightData) {
     if (accNorm < DEPLOYMENT_ACC_THRESHOLD) {
       probeState.isDeployed = true;
       probeState.deploymentTime = millis();
-      servo.write(180); // Deploy the parachute
+      servo.write(SERVO_DEPLOYED_POSITION); // Deploy the parachute
       Serial.println("Parachute deployed!");
     }
   }
@@ -227,7 +238,6 @@ void landingCheck(FlightData &flightData) {
       probeState.isLanded = true;
       probeState.isFlying = false;
       probeState.landingTime = millis();
-      servo.write(0); // Bring the servo back to the initial position
       Serial.println("Landed!");
     }
   }
@@ -235,13 +245,18 @@ void landingCheck(FlightData &flightData) {
 
 void resetFlightCheck() {
   if (probeState.isLanded && millis() - probeState.landingTime > 1000) {
-    probeState.isDeployed = false;
-    probeState.isFlying = false;
-    probeState.isLanded = false;
-    probeState.launchTime = 0;
-    probeState.deploymentTime = 0;
-    probeState.landingTime = 0;
+    resetFlight();
   }
+}
+
+void resetFlight() {
+  probeState.isDeployed = false;
+  probeState.isFlying = false;
+  probeState.isLanded = false;
+  probeState.launchTime = 0;
+  probeState.deploymentTime = 0;
+  probeState.landingTime = 0;
+  servo.write(SERVO_INITIAL_POSITION); // Reset the servo position
 }
 
 FlightData getFlightData() {
@@ -312,7 +327,7 @@ void setup() {
 
   t0 = millis();
   lastSendTime = t0;
-  servo.write(0); // Initial position of the servo
+  servo.write(SERVO_INITIAL_POSITION); // Initial position of the servo
   Serial.println("Setup complete.");
 }
 
