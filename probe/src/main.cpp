@@ -43,13 +43,14 @@ AccGyroSensor accGyroSensor(0x6A);
 long expectedFlightTime = 20;
 
 bool shouldPrintFlightData = false;
-bool shouldPrintBatteryData = true;
+bool shouldPrintBatteryData = false;
 bool shouldPrintNetworkData = false;
 
-ProbeState probeState = {false, false, false,
-                         0,     {0},   NULL,
-                         0,     0,     expectedFlightTime *dataSendFrequency,
-                         false, 0,     0};
+ProbeState probeState = {
+    false, false, false,
+    0,     {0},   NULL,
+    0,     0,     (uint16_t)(expectedFlightTime *dataSendFrequency),
+    false, 0,     0};
 
 long unsigned t0 = 0;
 long unsigned lastSendTime = 0;
@@ -98,9 +99,15 @@ void initializeSensors() {
     Serial.print("I2C Address:");
     Serial.println(accGyroSensor.getI2CAddress(), HEX);
     Serial.println("Reading sensor data...");
-    float tempTemp, tempPressure;
-    sensor.read(tempPressure, tempTemp, baseAltitude);
   }
+  delay(500); // Wait for the sensors to stabilize
+  Serial.println("Taking baseline altitude reading...");
+  // Take a baseline altitude reading
+  float tempPressure, tempTemperature, tempAltitude;
+  sensor.read(tempPressure, tempTemperature, tempAltitude);
+  baseAltitude = tempAltitude;
+  Serial.print("Base altitude set to: ");
+  Serial.println(baseAltitude);
 }
 
 void printMacAddresses() {
