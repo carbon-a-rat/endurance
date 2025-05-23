@@ -57,15 +57,11 @@ void enqueueGatewayPacket(uint8_t *packet, size_t packetSize) {
       (gatewayState.currentPacketIndex + gatewayState.packetQueueSize) %
       gatewayState.packetQueueMaxSize;
   if (gatewayState.packetQueueSize < gatewayState.packetQueueMaxSize) {
-    gatewayState.packetQueue[newPacketIndex] = (uint8_t *)malloc(packetSize);
-    if (gatewayState.packetQueue[newPacketIndex]) {
-      memcpy(gatewayState.packetQueue[newPacketIndex], packet, packetSize);
-      gatewayState.packetQueueSize++;
-    } else {
-      Serial.println("Failed to allocate memory for gateway packet.");
-    }
+    gatewayState.packetQueue[newPacketIndex] = packet; // Just store the pointer
+    gatewayState.packetQueueSize++;
   } else {
     Serial.println("Gateway packet queue is full, discarding packet.");
+    free(packet); // Free the packet if not enqueued
   }
 }
 
@@ -90,7 +86,6 @@ void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
   if (packet) {
     memcpy(packet, data, len);
     enqueueGatewayPacket(packet, len);
-    free(packet);
   } else {
     Serial.println("Failed to allocate memory for received packet.");
   }
