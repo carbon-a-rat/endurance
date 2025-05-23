@@ -12,10 +12,10 @@ struct FlightData {
 };
 
 int dataSendFrequency = 32; // 32 Hz
-long dataSendDelay = 1000 / dataSendFrequency;
+long unsigned dataSendDelay = 1000 / dataSendFrequency;
 
 int ledBlinkFrequency = 4; // 4 Hz
-long ledBlinkDelay = 1000 / ledBlinkFrequency;
+long unsigned ledBlinkDelay = 1000 / ledBlinkFrequency;
 
 void printFlightData(const FlightData &flightData) {
   Serial.print("Timestamp: ");
