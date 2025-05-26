@@ -3,6 +3,7 @@
 #include <ESPBattery.h>
 #include <Sensors.h>
 #include <Servo.h>
+#include <Timer.h>
 #include <core.h>
 #include <espnow.h>
 
@@ -332,13 +333,11 @@ void setup() {
 }
 
 void loop() {
-  if (millis() - lastSendTime >= dataSendDelay) {
-    lastSendTime = millis();
+  static Timer sendTimer(dataSendDelay);
 
+  if (sendTimer.expired()) {
     FlightData flightData = getFlightData();
-
     sendDataToQueue(flightData);
-
     if (shouldPrintFlightData) {
       printFlightData(flightData);
     }

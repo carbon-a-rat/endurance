@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
+#include <Timer.h> // <-- Add this line
 #include <Wire.h>
 #include <core.h>
 #include <espnow.h>
@@ -27,6 +28,7 @@ long unsigned lastLedChangeTime;
 // --- Add this struct for the second queue ---
 struct OutgoingQueue {
   uint8_t **packetQueue;
+  uint16_t *packetSizes; // <-- Add this
   uint16_t packetQueueSize;
   uint16_t packetQueueMaxSize;
   uint16_t currentPacketIndex;
@@ -34,7 +36,7 @@ struct OutgoingQueue {
 
 #define OUTGOING_QUEUE_MAX_SIZE 16
 
-OutgoingQueue outgoingQueue = {NULL, 0, OUTGOING_QUEUE_MAX_SIZE, 0};
+OutgoingQueue outgoingQueue = {NULL, NULL, 0, OUTGOING_QUEUE_MAX_SIZE, 0};
 
 void macAddressToByteArray(const char *macAddress, uint8_t *byteArray) {
   int i = 0;
@@ -71,7 +73,9 @@ void initializeGatewayQueue() {
 void initializeOutgoingQueue() {
   outgoingQueue.packetQueue =
       (uint8_t **)calloc(outgoingQueue.packetQueueMaxSize, sizeof(uint8_t *));
-  if (!outgoingQueue.packetQueue) {
+  outgoingQueue.packetSizes = (uint16_t *)calloc(
+      outgoingQueue.packetQueueMaxSize, sizeof(uint16_t)); // <-- Add this
+  if (!outgoingQueue.packetQueue || !outgoingQueue.packetSizes) {
     Serial.println("Failed to allocate outgoing packet queue!");
     while (true)
       delay(1000);
@@ -99,6 +103,7 @@ void enqueueOutgoingPacket(uint8_t *packet, size_t packetSize) {
       outgoingQueue.packetQueueMaxSize;
   if (outgoingQueue.packetQueueSize < outgoingQueue.packetQueueMaxSize) {
     outgoingQueue.packetQueue[newPacketIndex] = packet;
+    outgoingQueue.packetSizes[newPacketIndex] = packetSize; // <-- Store size
     outgoingQueue.packetQueueSize++;
   } else {
     Serial.println("Outgoing packet queue is full, discarding packet.");
@@ -122,6 +127,8 @@ void dequeueOutgoingPacket() {
   if (outgoingQueue.packetQueueSize > 0) {
     free(outgoingQueue.packetQueue[outgoingQueue.currentPacketIndex]);
     outgoingQueue.packetQueue[outgoingQueue.currentPacketIndex] = NULL;
+    outgoingQueue.packetSizes[outgoingQueue.currentPacketIndex] =
+        0; // <-- Clear size
     outgoingQueue.currentPacketIndex = (outgoingQueue.currentPacketIndex + 1) %
                                        outgoingQueue.packetQueueMaxSize;
     outgoingQueue.packetQueueSize--;
@@ -129,6 +136,10 @@ void dequeueOutgoingPacket() {
 }
 
 void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
+  if (len < sizeof(FlightData)) {
+    Serial.println("Received data too short for FlightData!");
+    return;
+  }
   FlightData flightData;
   Serial.print(", Data received: ");
   memcpy(&flightData, data, sizeof(FlightData));
@@ -153,18 +164,34 @@ void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
   }
 }
 
+// Add these globals for chunking
+uint16_t i2cSendOffset = 0;
+uint16_t i2cSendPacketSize = 0;
+
+// Modify onI2CRequest to send up to 32 bytes at a time
 void onI2CRequest() {
-  // Check if there is a packet in the queue
+  Serial.println("onI2CRequest called");
   if (gatewayState.packetQueueSize > 0) {
     uint8_t *packet = gatewayState.packetQueue[gatewayState.currentPacketIndex];
     size_t packetSize = sizeof(FlightData);
 
-    Wire.write(packet, packetSize); // Send the packet to the master
-    dequeueGatewayPacket();         // Remove it from the queue
+    // Calculate how many bytes to send this time
+    size_t bytesLeft = packetSize - i2cSendOffset;
+    size_t chunkSize = bytesLeft > 32 ? 32 : bytesLeft;
+
+    Wire.write(packet + i2cSendOffset, chunkSize);
+    i2cSendOffset += chunkSize;
+
+    if (i2cSendOffset >= packetSize) {
+      // Finished sending this packet
+      dequeueGatewayPacket();
+      i2cSendOffset = 0;
+    }
   } else {
     // No packet available, send a single zero byte
     uint8_t empty = 0;
     Wire.write(&empty, 1);
+    i2cSendOffset = 0;
   }
 }
 
@@ -189,6 +216,14 @@ void onI2CReceive(int numBytes) {
   }
 }
 
+void initializeEspNow() {
+  macAddressToByteArray(PROBE_MAC_ADDRESS, probeMacAddress); // Use global
+  Serial.println("ESP-NOW initialized successfully.");
+  esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
+  esp_now_add_peer(probeMacAddress, ESP_NOW_ROLE_COMBO, 0, NULL, 0);
+  esp_now_register_recv_cb(onDataReceived);
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.println();
@@ -201,20 +236,14 @@ void setup() {
       delay(1000);
     }
   }
-  macAddressToByteArray(PROBE_MAC_ADDRESS, probeMacAddress);
-  Serial.println("ESP-NOW initialized successfully.");
-  esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
-  uint8_t probeMacAddress[6];
-  macAddressToByteArray(PROBE_MAC_ADDRESS, probeMacAddress);
-  esp_now_add_peer(probeMacAddress, ESP_NOW_ROLE_COMBO, 0, NULL, 0);
-  esp_now_register_recv_cb(onDataReceived);
+  initializeEspNow();
 
   lastLedChangeTime = millis();
   pinMode(LED_BUILTIN, OUTPUT);
 
   // Initialize the gateway packet queue
   initializeGatewayQueue();
-  initializeOutgoingQueue(); // <-- Add this
+  initializeOutgoingQueue();
 
   // Initialize I2C as slave
   Wire.begin(I2C_SLAVE_ADDRESS);
@@ -223,19 +252,31 @@ void setup() {
 }
 
 void loop() {
-  // If there is a packet to send to the probe
-  if (outgoingQueue.packetQueueSize > 0) {
-    uint8_t *packet =
-        outgoingQueue.packetQueue[outgoingQueue.currentPacketIndex];
+  static Timer ledTimer(500);                       // 500ms LED toggle
+  static Timer sendTimer(1000 / dataSendFrequency); // Data send frequency
 
-    // Send via ESP-NOW
-    uint8_t result = esp_now_send(probeMacAddress, packet, sizeof(packet));
-    if (result == 0) {
-      Serial.println("Sent packet to probe via ESP-NOW.");
-      dequeueOutgoingPacket();
-    } else {
-      Serial.print("Failed to send packet to probe, error: ");
-      Serial.println(result);
+  // LED blink logic
+  if (ledTimer.expired()) {
+    ledState = !ledState;
+    digitalWrite(LED_BUILTIN, ledState ? HIGH : LOW);
+  }
+
+  // Data send logic
+  if (sendTimer.expired()) {
+    // If there is a packet to send to the probe
+    if (outgoingQueue.packetQueueSize > 0) {
+      uint8_t *packet =
+          outgoingQueue.packetQueue[outgoingQueue.currentPacketIndex];
+      uint16_t packetSize =
+          outgoingQueue.packetSizes[outgoingQueue.currentPacketIndex];
+      uint8_t result = esp_now_send(probeMacAddress, packet, packetSize);
+      if (result == 0) {
+        Serial.println("Sent packet to probe via ESP-NOW.");
+        dequeueOutgoingPacket();
+      } else {
+        Serial.print("Failed to send packet to probe, error: ");
+        Serial.println(result);
+      }
     }
   }
 }
