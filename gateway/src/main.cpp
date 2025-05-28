@@ -5,7 +5,8 @@
 #include <core.h>
 #include <espnow.h>
 
-#define PROBE_MAC_ADDRESS "4C:75:25:03:EA:DC"
+#define PROBE_MAC_ADDRESS "4C:75:25:03:EA:DC" // test probe MAC address
+// #define PROBE_MAC_ADDRESS "34:ab:95:1a:38:f9" // production probe MAC address
 #define I2C_SLAVE_ADDRESS 0x03
 
 struct GatewayState {
@@ -91,7 +92,7 @@ void enqueueGatewayPacket(uint8_t *packet, size_t packetSize) {
     gatewayState.packetQueue[newPacketIndex] = packet; // Just store the pointer
     gatewayState.packetQueueSize++;
   } else {
-    Serial.println("Gateway packet queue is full, discarding packet.");
+    // Serial.println("Gateway packet queue is full, discarding packet.");
     free(packet); // Free the packet if not enqueued
   }
 }
@@ -141,7 +142,6 @@ void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
     return;
   }
   FlightData flightData;
-  Serial.print(", Data received: ");
   memcpy(&flightData, data, sizeof(FlightData));
   printFlightData(flightData);
 
@@ -251,16 +251,31 @@ void setup() {
   Wire.onReceive(onI2CReceive);
 }
 
+void debugSerialToEspNow() {
+  if (Serial.available()) {
+    String input = Serial.readStringUntil('\n');
+    Serial.print("Debug input: ");
+    Serial.println(input);
+    input.trim();
+    if (input.length() > 0) {
+      uint8_t *packet = (uint8_t *)malloc(input.length() + 1);
+      if (packet) {
+        memcpy(packet, input.c_str(), input.length());
+        packet[input.length()] = '\0'; // Null-terminate the string
+        enqueueOutgoingPacket(packet, input.length() + 1);
+        Serial.print("Enqueued debug packet for probe via ESP-NOW, size: ");
+        Serial.println(input.length() + 1);
+      } else {
+        Serial.println("Failed to allocate memory for debug packet.");
+      }
+    }
+  }
+}
+
 void loop() {
-  static Timer ledTimer(500);                       // 500ms LED toggle
   static Timer sendTimer(1000 / dataSendFrequency); // Data send frequency
 
-  // LED blink logic
-  if (ledTimer.expired()) {
-    ledState = !ledState;
-    digitalWrite(LED_BUILTIN, ledState ? HIGH : LOW);
-  }
-
+  debugSerialToEspNow();
   // Data send logic
   if (sendTimer.expired()) {
     // If there is a packet to send to the probe
