@@ -15,8 +15,12 @@
 #define LANDING_ACC_MAX_THRESHOLD 1.2
 #define LANDING_TIME_THRESHOLD 1000
 
-#define SERVO_INITIAL_POSITION 0
-#define SERVO_DEPLOYED_POSITION 180
+#define SERVO_INITIAL_POSITION 150
+#define SERVO_DEPLOYED_POSITION 0
+#define DEPLOYMENT_ALTITUDE_DROP_AFTER_APOGEE 2.0f // meters, adjust as needed
+#define LANDING_ALTITUDE_STABLE_WINDOW 0.5f        // meters, adjust as needed
+#define LANDING_ALTITUDE_STABLE_TIME                                           \
+  2000 // ms, how long altitude must be stable
 
 struct ProbeState {
   bool isDeployed;
@@ -32,6 +36,10 @@ struct ProbeState {
   long unsigned launchTime = 0;
   long unsigned deploymentTime = 0;
   long unsigned landingTime = 0;
+  float maxAltitude = 0.0f;    // Track max altitude for apogee detection
+  bool apogeeDetected = false; // Flag for apogee detection
+  float lastAltitude = 0.0f;
+  unsigned long altitudeStableStart = 0;
 };
 
 float baseAltitude;
@@ -47,7 +55,7 @@ AccGyroSensor accGyroSensor(0x6A);
 long expectedFlightTime = 20;
 
 bool shouldPrintFlightData = false;
-bool shouldPrintBatteryData = false;
+bool shouldPrintBatteryData = true;
 bool shouldPrintNetworkData = false;
 
 ProbeState probeState = {
@@ -78,9 +86,9 @@ void batteryStateHandler(ESPBattery &b) {
   if (shouldPrintBatteryData) {
     Serial.print("Battery Level: ");
     Serial.print(batteryPercentage);
-    Serial.print("%, Voltage: ");
-    Serial.print(b.getVoltage());
-    Serial.print("V, State: ");
+    Serial.print("%, Level: ");
+    Serial.print(b.getLevel());
+    Serial.print("mV, State: ");
     Serial.println(b.stateToString(b.getState()));
   }
 }
@@ -216,31 +224,44 @@ void rotateAccGyroData(float &ax, float &ay, float &az, float &gx, float &gy,
 void deployementCheck(FlightData &flightData) {
   if (probeState.isFlying && !probeState.isDeployed &&
       flightData.timestamp > DEPLOYMENT_TIME_THRESHOLD) {
-    uint8_t accNorm =
-        sqrt(flightData.ax * flightData.ax + flightData.ay * flightData.ay +
-             flightData.az * flightData.az);
-    if (accNorm < DEPLOYMENT_ACC_THRESHOLD) {
+
+    // Track max altitude
+    if (flightData.altitude > probeState.maxAltitude) {
+      probeState.maxAltitude = flightData.altitude;
+      probeState.apogeeDetected = false;
+    }
+
+    // Detect apogee: altitude has dropped by threshold after max
+    if (!probeState.apogeeDetected &&
+        (probeState.maxAltitude - flightData.altitude) >
+            DEPLOYMENT_ALTITUDE_DROP_AFTER_APOGEE) {
+      probeState.apogeeDetected = true;
       probeState.isDeployed = true;
       probeState.deploymentTime = millis();
       servo.write(SERVO_DEPLOYED_POSITION); // Deploy the parachute
-      Serial.println("Parachute deployed!");
+      Serial.println("Parachute deployed at apogee!");
     }
   }
 }
 
 void landingCheck(FlightData &flightData) {
-  if (probeState.isFlying && probeState.isDeployed &&
-      millis() - probeState.deploymentTime > LANDING_TIME_THRESHOLD) {
-    uint8_t accNorm =
-        sqrt(flightData.ax * flightData.ax + flightData.ay * flightData.ay +
-             flightData.az * flightData.az);
-    if (accNorm > LANDING_ACC_MIN_THRESHOLD &&
-        accNorm < LANDING_ACC_MAX_THRESHOLD) {
-      probeState.isLanded = true;
-      probeState.isFlying = false;
-      probeState.landingTime = millis();
-      Serial.println("Landed!");
+  if (probeState.isFlying && probeState.isDeployed) {
+    float altitudeChange = fabs(flightData.altitude - probeState.lastAltitude);
+
+    if (altitudeChange < LANDING_ALTITUDE_STABLE_WINDOW) {
+      if (probeState.altitudeStableStart == 0) {
+        probeState.altitudeStableStart = millis();
+      } else if (millis() - probeState.altitudeStableStart >
+                 LANDING_ALTITUDE_STABLE_TIME) {
+        probeState.isLanded = true;
+        probeState.isFlying = false;
+        probeState.landingTime = millis();
+        Serial.println("Landed (altitude stable)!");
+      }
+    } else {
+      probeState.altitudeStableStart = 0;
     }
+    probeState.lastAltitude = flightData.altitude;
   }
 }
 
@@ -258,6 +279,10 @@ void resetFlight() {
   probeState.deploymentTime = 0;
   probeState.landingTime = 0;
   servo.write(SERVO_INITIAL_POSITION); // Reset the servo position
+  probeState.maxAltitude = 0.0f;
+  probeState.apogeeDetected = false;
+  probeState.lastAltitude = 0.0f;
+  probeState.altitudeStableStart = 0;
 }
 
 FlightData getFlightData() {
@@ -297,6 +322,7 @@ void initializeESPNOW() {
   macAddressToByteArray(gatewayMacAddress, probeState.gatewayAddress);
   esp_now_add_peer(probeState.gatewayAddress, ESP_NOW_ROLE_COMBO, 0, NULL, 0);
   esp_now_register_send_cb(onDataSent);
+  esp_now_register_recv_cb(onDataReceived);
 }
 
 void setup() {
