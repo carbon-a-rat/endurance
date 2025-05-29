@@ -60,6 +60,10 @@ void setup() {
 void loop() {
   switch (launching_state) {
     case STAND_BY:
+      if (airFilled && waterFilled) {
+        launching_state = READY_TO_LAUNCH;
+        Serial.println("Ready to launch, waiting for command");
+      }
       break;
     case FILLING_AIR:
       // air filling logic
@@ -74,7 +78,8 @@ void loop() {
 
       if (currentAirPressure >= targetAirPressure) {
         Serial.println("Air target pressure reached. Closing valve.");
-        digitalWrite(AIR_DISTRIBUTOR_PIN, LOW);
+        stopAirFlow();
+
         airFilled = true;
         Serial.println("Air OK.");
       }
@@ -93,11 +98,15 @@ void loop() {
         // Reached desired water volume
 
         Serial.println("Water target volume reached. Now closing valve.");
-        digitalWrite(WATER_VALVE_PIN, LOW);
+        stopWaterFlow();
 
         waterFilled = true;
         Serial.println("Water OK.");
       }
+      break;
+
+    case READY_TO_LAUNCH:
+      Serial.print(".");
       break;
   }
   delay(100);
@@ -110,6 +119,8 @@ void launchFlight() {
     digitalWrite(CYLINDER_PIN, HIGH);
     delay(2000);
     digitalWrite(CYLINDER_PIN, LOW);
+
+    // launching_state = STAND_BY;
   }
   else {
     Serial.println("WARNING: Launch not ready yet.");
@@ -151,7 +162,7 @@ void fillWater() {
   // Starts to fill the rocket with water.
 
   if (waterFilled == true) {
-    Serial.println("WARNING: Water has already been filled !")
+    Serial.println("WARNING: Water has already been filled !");
   }
   digitalWrite(CANCEL_PIN, LOW);
 
