@@ -272,8 +272,36 @@ void debugSerialToEspNow() {
   }
 }
 
+void debugAddSampleDataToQueue() {
+  // Create a sample FlightData packet
+  FlightData sampleData;
+  sampleData.ax = 1000;
+  sampleData.ay = 2000;
+  sampleData.az = 3000;
+  sampleData.gx = 4000;
+  sampleData.gy = 5000;
+  sampleData.gz = 6000;
+  sampleData.batteryLevel = 75; // Example battery level
+  sampleData.isFlying = true;
+  sampleData.isDeployed = false;
+  sampleData.isLanded = false;
+
+  // Allocate memory for the packet
+  uint8_t *packet = (uint8_t *)malloc(sizeof(FlightData));
+  if (packet) {
+    memcpy(packet, &sampleData, sizeof(FlightData));
+    enqueueGatewayPacket(packet, sizeof(FlightData));
+    Serial.println("Sample data added to gateway queue.");
+  } else {
+    Serial.println("Failed to allocate memory for sample data packet.");
+  }
+}
+
 void loop() {
   static Timer sendTimer(1000 / dataSendFrequency); // Data send frequency
+
+  static Timer debugSampleData(
+      1000 / dataSendFrequency); // Debug sample data frequency
 
   debugSerialToEspNow();
   // Data send logic
@@ -293,5 +321,9 @@ void loop() {
         Serial.println(result);
       }
     }
+  }
+
+  if (debugSampleData.expired()) {
+    debugAddSampleDataToQueue();
   }
 }
