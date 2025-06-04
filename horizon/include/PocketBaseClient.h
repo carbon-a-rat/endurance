@@ -2,9 +2,10 @@
 #define POCKETBASE_CLIENT_H
 
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <map>
+#include <vector>
 
 class PocketBaseClient {
 public:
@@ -31,6 +32,9 @@ public:
   void clearRealtimeSubscriptions();
   // Start the realtime SSE connection and set the callback
   void startRealtime(void (*onMessage)(const String &));
+  // Returns true if the underlying client is connected to the realtime API
+  // (SSE)
+  bool isRealtimeConnected() const;
 
 private:
   String _host;
@@ -44,6 +48,9 @@ private:
   String _realtimeClientId;
   std::map<String, std::vector<String>> _realtimeSubscriptions;
   void _notifyRealtimeSubscriptions();
+  // Internal HTTP helper
+  String _sendHttpRequest(const String &method, const String &url,
+                          const String &body);
 };
 
 #endif // POCKETBASE_CLIENT_H

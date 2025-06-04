@@ -3,8 +3,8 @@
 
 PocketBaseClient::PocketBaseClient(const String &host, uint16_t port)
     : _host(host), _port(port), _token(""), _authCollection("users") {
-  _client.setInsecure(); // For self-signed certs; use setFingerprint for
-                         // production
+  _client.setInsecure(); // For self-signed certs; use setCACert for production
+                         // on ESP32
 }
 
 void PocketBaseClient::setAuthCollection(const String &collectionName) {
@@ -29,15 +29,15 @@ bool PocketBaseClient::login(const String &identity, const String &password) {
   _client.print(request);
   String response = _client.readStringUntil('\0');
   int bodyIdx = response.indexOf("\r\n\r\n");
-  Serial.println("[PocketBase] Response: " + response);
   if (bodyIdx < 0)
     return false;
   String body = response.substring(bodyIdx + 4);
-  DynamicJsonDocument doc(1024);
+  JsonDocument doc;
   DeserializationError err = deserializeJson(doc, body);
-  if (err)
+  if (err) {
     Serial.println("[PocketBase] JSON parse error: " + String(err.c_str()));
-  return false;
+    return false;
+  }
   if (doc["token"]) {
     _token = doc["token"].as<String>();
     if (doc["record"]) {
@@ -61,16 +61,28 @@ String PocketBaseClient::getToken() const { return _token; }
 
 String PocketBaseClient::getAuthRecordJson() const { return _authRecordJson; }
 
-String PocketBaseClient::getRecord(const String &collection,
-                                   const String &recordId) {
+// Returns true if the underlying client is connected to the realtime API (SSE)
+bool PocketBaseClient::isRealtimeConnected() const {
+  return _realtimeClientId.length() > 0;
+}
+
+// --- Internal HTTP helper ---
+String PocketBaseClient::_sendHttpRequest(const String &method,
+                                          const String &url,
+                                          const String &body) {
   if (!_client.connect(_host.c_str(), _port))
     return "";
-  String url = "/api/collections/" + collection + "/records/" + recordId;
-  String request = "GET " + url + " HTTP/1.1\r\n";
+  String request = method + " " + url + " HTTP/1.1\r\n";
   request += "Host: " + _host + "\r\n";
+  if (method == "POST" || method == "PATCH")
+    request += "Content-Type: application/json\r\n";
   if (_token.length())
     request += "Authorization: " + _token + "\r\n";
+  if (method == "POST" || method == "PATCH")
+    request += "Content-Length: " + String(body.length()) + "\r\n";
   request += "Connection: close\r\n\r\n";
+  if (method == "POST" || method == "PATCH")
+    request += body;
   _client.print(request);
   String response = _client.readStringUntil('\0');
   int bodyIdx = response.indexOf("\r\n\r\n");
@@ -79,54 +91,31 @@ String PocketBaseClient::getRecord(const String &collection,
   return response.substring(bodyIdx + 4);
 }
 
+// --- CRUD methods using the helper ---
+String PocketBaseClient::getRecord(const String &collection,
+                                   const String &recordId) {
+  String url = "/api/collections/" + collection + "/records/" + recordId;
+  return _sendHttpRequest("GET", url, "");
+}
+
 String PocketBaseClient::createRecord(const String &collection,
                                       const String &jsonData) {
-  if (!_client.connect(_host.c_str(), _port))
-    return "";
   String url = "/api/collections/" + collection + "/records";
-  String request = "POST " + url + " HTTP/1.1\r\n";
-  request += "Host: " + _host + "\r\n";
-  request += "Content-Type: application/json\r\n";
-  if (_token.length())
-    request += "Authorization: " + _token + "\r\n";
-  request += "Content-Length: " + String(jsonData.length()) + "\r\n";
-  request += "Connection: close\r\n\r\n";
-  request += jsonData;
-  _client.print(request);
-  String response = _client.readStringUntil('\0');
-  int bodyIdx = response.indexOf("\r\n\r\n");
-  if (bodyIdx < 0)
-    return "";
-  return response.substring(bodyIdx + 4);
+  return _sendHttpRequest("POST", url, jsonData);
 }
 
 String PocketBaseClient::updateRecord(const String &collection,
                                       const String &recordId,
                                       const String &jsonData) {
-  if (!_client.connect(_host.c_str(), _port))
-    return "";
   String url = "/api/collections/" + collection + "/records/" + recordId;
-  String request = "PATCH " + url + " HTTP/1.1\r\n";
-  request += "Host: " + _host + "\r\n";
-  request += "Content-Type: application/json\r\n";
-  if (_token.length())
-    request += "Authorization: " + _token + "\r\n";
-  request += "Content-Length: " + String(jsonData.length()) + "\r\n";
-  request += "Connection: close\r\n\r\n";
-  request += jsonData;
-  _client.print(request);
-  String response = _client.readStringUntil('\0');
-  int bodyIdx = response.indexOf("\r\n\r\n");
-  if (bodyIdx < 0)
-    return "";
-  return response.substring(bodyIdx + 4);
+  return _sendHttpRequest("PATCH", url, jsonData);
 }
 
 bool PocketBaseClient::deleteRecord(const String &collection,
                                     const String &recordId) {
+  String url = "/api/collections/" + collection + "/records/" + recordId;
   if (!_client.connect(_host.c_str(), _port))
     return false;
-  String url = "/api/collections/" + collection + "/records/" + recordId;
   String request = "DELETE " + url + " HTTP/1.1\r\n";
   request += "Host: " + _host + "\r\n";
   if (_token.length())
@@ -212,6 +201,10 @@ void PocketBaseClient::_notifyRealtimeSubscriptions() {
 }
 
 void PocketBaseClient::startRealtime(void (*onMessage)(const String &)) {
+  if (!_token.length()) {
+    Serial.println("[PocketBase] Not authenticated, cannot start realtime");
+    return;
+  }
   if (!_client.connect(_host.c_str(), _port)) {
     Serial.println("[PocketBase] Failed to connect for SSE");
     return;
@@ -219,8 +212,7 @@ void PocketBaseClient::startRealtime(void (*onMessage)(const String &)) {
   String url = "/api/realtime";
   String request = "GET " + url + " HTTP/1.1\r\n";
   request += "Host: " + _host + "\r\n";
-  if (_token.length())
-    request += "Authorization: " + _token + "\r\n";
+  request += "Authorization: " + _token + "\r\n";
   request += "Accept: text/event-stream\r\n";
   request += "Connection: keep-alive\r\n\r\n";
   _client.print(request);

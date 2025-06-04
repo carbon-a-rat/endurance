@@ -1,13 +1,12 @@
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
-#include <Timer.h> // <-- Add this line
+#include <Timer.h>
+#include <WiFi.h>
 #include <Wire.h>
-#include <core.h>
-#include <espnow.h>
+#include <esp_now.h>
 
-#define PROBE_MAC_ADDRESS "4C:75:25:03:EA:DC" // test probe MAC address
-// #define PROBE_MAC_ADDRESS "34:ab:95:1a:38:f9" // production probe MAC address
-#define I2C_SLAVE_ADDRESS 0x03
+// Core Endurance library
+#include <EnduranceConfig.h>
+#include <core.h>
 
 struct GatewayState {
   uint16_t packetQueueSize;
@@ -20,16 +19,23 @@ struct GatewayState {
 // packets before data loss occurs.
 int8_t dataQueueSizeSeconds = 10;
 
-GatewayState gatewayState = {0, dataQueueSizeSeconds *dataSendFrequency, 0,
-                             NULL};
+GatewayState gatewayState = {
+    0, (uint16_t)(dataQueueSizeSeconds *DATA_SEND_FREQUENCY), 0, NULL};
 
 bool ledState = false;
 long unsigned lastLedChangeTime;
 
+// --- Data rate monitoring ---
+unsigned long i2cBytesSentTotal = 0;
+unsigned long i2cBytesReceivedTotal = 0; // NEW: Track I2C incoming
+unsigned long espNowBytesSentTotal = 0;
+unsigned long espNowBytesReceivedTotal = 0; // NEW: Track ESP-NOW incoming
+void printDataRates();
+
 // --- Add this struct for the second queue ---
 struct OutgoingQueue {
   uint8_t **packetQueue;
-  uint16_t *packetSizes; // <-- Add this
+  uint16_t *packetSizes;
   uint16_t packetQueueSize;
   uint16_t packetQueueMaxSize;
   uint16_t currentPacketIndex;
@@ -136,16 +142,17 @@ void dequeueOutgoingPacket() {
   }
 }
 
-void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
+void onDataReceived(unsigned char *mac_addr, unsigned char *data, uint8_t len) {
   if (len < sizeof(FlightData)) {
     Serial.println("Received data too short for FlightData!");
     return;
   }
   FlightData flightData;
+  memset(&flightData, 0, sizeof(FlightData));
   memcpy(&flightData, data, sizeof(FlightData));
-  printFlightData(flightData);
+  // printFlightData(flightData);
 
-  u8_t *packet = (u8_t *)malloc(len);
+  uint8_t *packet = (uint8_t *)malloc(len);
   if (packet) {
     memcpy(packet, data, len);
     enqueueGatewayPacket(packet, len);
@@ -153,7 +160,10 @@ void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
     Serial.println("Failed to allocate memory for received packet.");
   }
 
-  if (millis() - lastLedChangeTime > ledBlinkDelay) {
+  espNowBytesReceivedTotal += len;
+
+  // No integrated LED blinking on esp32-pico
+  /*if (millis() - lastLedChangeTime > LED_BLINK_DELAY) {
     if (ledState) {
       digitalWrite(LED_BUILTIN, LOW);
     } else {
@@ -161,7 +171,7 @@ void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
     }
     ledState = !ledState;
     lastLedChangeTime = millis();
-  }
+  } */
 }
 
 // Add these globals for chunking
@@ -170,16 +180,20 @@ uint16_t i2cSendPacketSize = 0;
 
 // Modify onI2CRequest to send up to 32 bytes at a time
 void onI2CRequest() {
-  Serial.println("onI2CRequest called");
   if (gatewayState.packetQueueSize > 0) {
     uint8_t *packet = gatewayState.packetQueue[gatewayState.currentPacketIndex];
     size_t packetSize = sizeof(FlightData);
 
-    // Calculate how many bytes to send this time
+    // Calculate how many bytes to send this time (max 31 for data)
     size_t bytesLeft = packetSize - i2cSendOffset;
-    size_t chunkSize = bytesLeft > 32 ? 32 : bytesLeft;
+    size_t chunkSize = bytesLeft > 31 ? 31 : bytesLeft;
 
-    Wire.write(packet + i2cSendOffset, chunkSize);
+    uint8_t chunk[32];
+    chunk[0] = (uint8_t)i2cSendOffset; // Offset header
+    memcpy(chunk + 1, packet + i2cSendOffset, chunkSize);
+
+    Wire.write(chunk, chunkSize + 1);
+    i2cBytesSentTotal += (chunkSize + 1); // <-- Count bytes sent over I2C
     i2cSendOffset += chunkSize;
 
     if (i2cSendOffset >= packetSize) {
@@ -189,14 +203,16 @@ void onI2CRequest() {
     }
   } else {
     // No packet available, send a single zero byte
-    uint8_t empty = 0;
-    Wire.write(&empty, 1);
+    uint8_t empty[32] = {0};
+    Wire.write(empty, 32);
+    i2cBytesSentTotal += 1; // Count empty packet as one byte anyway
     i2cSendOffset = 0;
   }
 }
 
 void onI2CReceive(int numBytes) {
   if (numBytes > 0) {
+    i2cBytesReceivedTotal += numBytes; // NEW: Count incoming I2C bytes
     uint8_t *packet = (uint8_t *)malloc(numBytes);
     if (packet) {
       for (int i = 0; i < numBytes; ++i) {
@@ -219,14 +235,29 @@ void onI2CReceive(int numBytes) {
 void initializeEspNow() {
   macAddressToByteArray(PROBE_MAC_ADDRESS, probeMacAddress); // Use global
   Serial.println("ESP-NOW initialized successfully.");
-  esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
-  esp_now_add_peer(probeMacAddress, ESP_NOW_ROLE_COMBO, 0, NULL, 0);
-  esp_now_register_recv_cb(onDataReceived);
+
+  // ESP32: Register receive callback
+  esp_now_register_recv_cb([](const uint8_t *mac_addr, const uint8_t *data,
+                              int data_len) {
+    onDataReceived((unsigned char *)mac_addr, (unsigned char *)data, data_len);
+  });
+
+  // ESP32: Add peer
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(peerInfo.peer_addr, probeMacAddress, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+  if (!esp_now_is_peer_exist(probeMacAddress)) {
+    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+      Serial.println("Failed to add ESP-NOW peer!");
+    }
+  }
 }
 
 void setup() {
   Serial.begin(115200);
   Serial.println();
+  Serial.println("Starting Gateway...");
   printMacAddresses();
   Serial.println("Initializing ESP-NOW...");
   WiFi.mode(WIFI_STA);
@@ -239,14 +270,15 @@ void setup() {
   initializeEspNow();
 
   lastLedChangeTime = millis();
-  pinMode(LED_BUILTIN, OUTPUT);
 
   // Initialize the gateway packet queue
   initializeGatewayQueue();
   initializeOutgoingQueue();
 
+  delay(500); // Wait for horizon to start I2C master
+  Serial.println("Initializing I2C as slave...");
   // Initialize I2C as slave
-  Wire.begin(I2C_SLAVE_ADDRESS);
+  Wire.begin(GATEWAY_I2C_ADDRESS);
   Wire.onRequest(onI2CRequest);
   Wire.onReceive(onI2CReceive);
 }
@@ -298,10 +330,10 @@ void debugAddSampleDataToQueue() {
 }
 
 void loop() {
-  static Timer sendTimer(1000 / dataSendFrequency); // Data send frequency
+  static Timer sendTimer(DATA_SEND_INTERVAL); // Data send frequency
 
   static Timer debugSampleData(
-      1000 / dataSendFrequency); // Debug sample data frequency
+      DATA_SEND_INTERVAL); // Debug sample data frequency
 
   debugSerialToEspNow();
   // Data send logic
@@ -324,6 +356,45 @@ void loop() {
   }
 
   if (debugSampleData.expired()) {
-    debugAddSampleDataToQueue();
+    // debugAddSampleDataToQueue();
+  }
+
+  printDataRates();
+}
+
+void sendEspNowPacket(const uint8_t *mac_addr, const uint8_t *data,
+                      size_t len) {
+  esp_now_send(mac_addr, data, len);
+  espNowBytesSentTotal += len;
+}
+
+void printDataRates() {
+  static unsigned long lastPrint = 0;
+  static unsigned long lastI2CBytesSent = 0;
+  static unsigned long lastI2CBytesReceived = 0;
+  static unsigned long lastEspNowBytesSent = 0;
+  static unsigned long lastEspNowBytesReceived = 0;
+  unsigned long now = millis();
+  if (now - lastPrint >= 1000) {
+    unsigned long i2cRateSent = i2cBytesSentTotal - lastI2CBytesSent;
+    unsigned long i2cRateReceived =
+        i2cBytesReceivedTotal - lastI2CBytesReceived;
+    unsigned long espNowRateSent = espNowBytesSentTotal - lastEspNowBytesSent;
+    unsigned long espNowRateReceived =
+        espNowBytesReceivedTotal - lastEspNowBytesReceived;
+    Serial.print("[DataRate] I2C OUT: ");
+    Serial.print(i2cRateSent);
+    Serial.print(" B/s, I2C IN: ");
+    Serial.print(i2cRateReceived);
+    Serial.print(" B/s, ESP-NOW OUT: ");
+    Serial.print(espNowRateSent);
+    Serial.print(" B/s, ESP-NOW IN: ");
+    Serial.print(espNowRateReceived);
+    Serial.println(" B/s");
+    lastI2CBytesSent = i2cBytesSentTotal;
+    lastI2CBytesReceived = i2cBytesReceivedTotal;
+    lastEspNowBytesSent = espNowBytesSentTotal;
+    lastEspNowBytesReceived = espNowBytesReceivedTotal;
+    lastPrint = now;
   }
 }

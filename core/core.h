@@ -1,3 +1,25 @@
+// Public constants and structures for the whole endurance project
+#pragma once
+const int DATA_SEND_FREQUENCY = 32; // 32 Hz
+const long unsigned DATA_SEND_INTERVAL = 1000 / DATA_SEND_FREQUENCY;
+
+const int LED_BLINK_FREQUENCY = 4; // 4 Hz
+const long unsigned LED_BLINK_DELAY = 1000 / LED_BLINK_FREQUENCY;
+
+// I2C addresses for gateway and pad
+const char GATEWAY_I2C_ADDRESS = 0x03;
+const char PAD_I2C_ADDRESS = 0x04;
+
+// Probe deployment and landing constants
+const int PROBE_DEPLOYMENT_TIME_THRESHOLD = 300;
+const int PROBE_SERVO_INITIAL_POSITION = 0;
+const int PROBE_SERVO_DEPLOYED_POSITION = 180;
+const float PROBE_DEPLOYMENT_ALTITUDE_DROP_AFTER_APOGEE = 0.2f; // meters
+const float PROBE_LANDING_ALTITUDE_STABLE_WINDOW = 0.3f;        // meters
+const long PROBE_LANDING_ALTITUDE_STABLE_TIME =
+    2000; // ms, how long altitude must be stable
+
+#pragma pack(push, 1)
 struct FlightData {
   long unsigned timestamp;
   float pressure;
@@ -10,12 +32,7 @@ struct FlightData {
   bool isFlying;
   bool isLanded;
 };
-
-int dataSendFrequency = 32; // 32 Hz
-long unsigned dataSendDelay = 1000 / dataSendFrequency;
-
-int ledBlinkFrequency = 4; // 4 Hz
-long unsigned ledBlinkDelay = 1000 / ledBlinkFrequency;
+#pragma pack(pop)
 
 void printFlightData(const FlightData &flightData) {
   Serial.print("Timestamp: ");

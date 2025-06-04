@@ -1,26 +1,15 @@
+#include "main.h"
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESPBattery.h>
 #include <Sensors.h>
 #include <Servo.h>
 #include <Timer.h>
-#include <core.h>
 #include <espnow.h>
 
-#define GATEWAY_MAC_ADDRESS "bc:ff:4d:40:d3:02"
-#define DEPLOYMENT_ACC_THRESHOLD 1.5
-#define DEPLOYMENT_TIME_THRESHOLD 300
-
-#define LANDING_ACC_MIN_THRESHOLD 0.8
-#define LANDING_ACC_MAX_THRESHOLD 1.2
-#define LANDING_TIME_THRESHOLD 1000
-
-#define SERVO_INITIAL_POSITION 150
-#define SERVO_DEPLOYED_POSITION 0
-#define DEPLOYMENT_ALTITUDE_DROP_AFTER_APOGEE 2.0f // meters, adjust as needed
-#define LANDING_ALTITUDE_STABLE_WINDOW 0.5f        // meters, adjust as needed
-#define LANDING_ALTITUDE_STABLE_TIME                                           \
-  2000 // ms, how long altitude must be stable
+// Core Endurance library
+#include <EnduranceConfig.h>
+#include <core.h>
 
 struct ProbeState {
   bool isDeployed;
@@ -61,7 +50,7 @@ bool shouldPrintNetworkData = false;
 ProbeState probeState = {
     false, false, false,
     0,     {0},   NULL,
-    0,     0,     (uint16_t)(expectedFlightTime *dataSendFrequency),
+    0,     0,     (uint16_t)(expectedFlightTime *DATA_SEND_FREQUENCY),
     false, 0,     0};
 
 long unsigned t0 = 0;
@@ -130,8 +119,8 @@ void printMacAddresses() {
 }
 
 void sendDataToQueue(FlightData &flightData) {
-  // Allocate memory for the packet
-  uint8_t *packet = (uint8_t *)malloc(sizeof(FlightData));
+  // Zero-initialize the packet for safety
+  uint8_t *packet = (uint8_t *)calloc(1, sizeof(FlightData));
   if (!packet) {
     if (shouldPrintNetworkData) {
       Serial.println("Failed to allocate memory for packet.");
@@ -184,15 +173,19 @@ void onDataSent(unsigned char *mac_addr, u8 status) {
   probeState.sendingPacket = false;
 }
 
+void startFlight() {
+  probeState.isFlying = true;
+  probeState.launchTime = millis();
+  float tempTemp, tempPressure;
+  sensor.read(tempPressure, tempTemp, baseAltitude); // Zero the altitude
+}
+
 void onDataReceived(unsigned char *mac_addr, unsigned char *data, u8 len) {
   String cmd = String((char *)data).substring(0, len);
 
   if (cmd.startsWith("GO")) {
     Serial.println("Received GO command");
-    probeState.isFlying = true;
-    probeState.launchTime = millis();
-    float tempTemp, tempPressure;
-    sensor.read(tempPressure, tempTemp, baseAltitude); // Zero the altitude
+    startFlight();
   } else if (cmd.startsWith("RESET")) {
     Serial.println("Received RESET command");
     resetFlight();
@@ -223,7 +216,7 @@ void rotateAccGyroData(float &ax, float &ay, float &az, float &gx, float &gy,
 
 void deployementCheck(FlightData &flightData) {
   if (probeState.isFlying && !probeState.isDeployed &&
-      flightData.timestamp > DEPLOYMENT_TIME_THRESHOLD) {
+      flightData.timestamp > PROBE_DEPLOYMENT_TIME_THRESHOLD) {
 
     // Track max altitude
     if (flightData.altitude > probeState.maxAltitude) {
@@ -234,11 +227,11 @@ void deployementCheck(FlightData &flightData) {
     // Detect apogee: altitude has dropped by threshold after max
     if (!probeState.apogeeDetected &&
         (probeState.maxAltitude - flightData.altitude) >
-            DEPLOYMENT_ALTITUDE_DROP_AFTER_APOGEE) {
+            PROBE_DEPLOYMENT_ALTITUDE_DROP_AFTER_APOGEE) {
       probeState.apogeeDetected = true;
       probeState.isDeployed = true;
       probeState.deploymentTime = millis();
-      servo.write(SERVO_DEPLOYED_POSITION); // Deploy the parachute
+      servo.write(PROBE_SERVO_DEPLOYED_POSITION); // Deploy the parachute
       Serial.println("Parachute deployed at apogee!");
     }
   }
@@ -248,11 +241,11 @@ void landingCheck(FlightData &flightData) {
   if (probeState.isFlying && probeState.isDeployed) {
     float altitudeChange = fabs(flightData.altitude - probeState.lastAltitude);
 
-    if (altitudeChange < LANDING_ALTITUDE_STABLE_WINDOW) {
+    if (altitudeChange < PROBE_LANDING_ALTITUDE_STABLE_WINDOW) {
       if (probeState.altitudeStableStart == 0) {
         probeState.altitudeStableStart = millis();
       } else if (millis() - probeState.altitudeStableStart >
-                 LANDING_ALTITUDE_STABLE_TIME) {
+                 PROBE_LANDING_ALTITUDE_STABLE_TIME) {
         probeState.isLanded = true;
         probeState.isFlying = false;
         probeState.landingTime = millis();
@@ -268,6 +261,7 @@ void landingCheck(FlightData &flightData) {
 void resetFlightCheck() {
   if (probeState.isLanded && millis() - probeState.landingTime > 1000) {
     resetFlight();
+    startFlight(); // TESTING: Restart instantly after landing
   }
 }
 
@@ -278,7 +272,7 @@ void resetFlight() {
   probeState.launchTime = 0;
   probeState.deploymentTime = 0;
   probeState.landingTime = 0;
-  servo.write(SERVO_INITIAL_POSITION); // Reset the servo position
+  servo.write(PROBE_SERVO_INITIAL_POSITION); // Reset the servo position
   probeState.maxAltitude = 0.0f;
   probeState.apogeeDetected = false;
   probeState.lastAltitude = 0.0f;
@@ -354,12 +348,11 @@ void setup() {
 
   t0 = millis();
   lastSendTime = t0;
-  servo.write(SERVO_INITIAL_POSITION); // Initial position of the servo
+  servo.write(PROBE_SERVO_INITIAL_POSITION); // Initial position of the servo
   Serial.println("Setup complete.");
 }
-
 void loop() {
-  static Timer sendTimer(dataSendDelay);
+  static Timer sendTimer(DATA_SEND_INTERVAL);
 
   if (sendTimer.expired()) {
     FlightData flightData = getFlightData();
@@ -370,5 +363,4 @@ void loop() {
   }
   battery.loop();
   sendDataToGateway();
-  // servo.write(0-180) for testing;
 }
