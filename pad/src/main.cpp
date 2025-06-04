@@ -32,12 +32,15 @@ bool airFilled;
 void increase();  
 void stopWaterFlow();
 void stopAirFlow();
+void fillWater();
+void fillAir();
 
 void setup() {
   Serial.begin(115200);
   pinMode(AIR_DISTRIBUTOR_PIN, OUTPUT);
   pinMode(CYLINDER_PIN, OUTPUT);
   pinMode(CANCEL_PIN, OUTPUT);
+  pinMode(WATER_VALVE_PIN, OUTPUT);
 
   pinMode(sensorPin, INPUT);
 
@@ -55,61 +58,15 @@ void setup() {
   mpx5700.setMeanSampleSize(5);
 
   */
+
+ Serial.println("Setup done.");
 }
 
 void loop() {
-  switch (launching_state) {
-    case STAND_BY:
-      if (airFilled && waterFilled) {
-        launching_state = READY_TO_LAUNCH;
-        Serial.println("Ready to launch, waiting for command");
-      }
-      break;
-    case FILLING_AIR:
-      // air filling logic
-
-      // Get the current ambient air pressure:
-      // set whether to enable calibration, 1
-      //  for calibration required, 0 for no calibration required
-      float currentAirPressure = mpx5700.getPressureValue_kpa(1);
-
-      Serial.print(currentAirPressure/targetAirPressure*100);
-      Serial.println(" % filled.");
-
-      if (currentAirPressure >= targetAirPressure) {
-        Serial.println("Air target pressure reached. Closing valve.");
-        stopAirFlow();
-
-        airFilled = true;
-        Serial.println("Air OK.");
-      }
-      break;
-
-    case FILLING_WATER:
-      // water filling logic
-
-      // /!\ WARNING: CHECK THIS VALUE:
-      // 1L = 660 pulses
-      float currentWaterVolume = pulse / 660;
-      Serial.print(currentWaterVolume/targetWaterVolume*100);
-      Serial.println(" % filled.");
-
-      if (currentWaterVolume >= targetWaterVolume) {
-        // Reached desired water volume
-
-        Serial.println("Water target volume reached. Now closing valve.");
-        stopWaterFlow();
-
-        waterFilled = true;
-        Serial.println("Water OK.");
-      }
-      break;
-
-    case READY_TO_LAUNCH:
-      Serial.print(".");
-      break;
-  }
-  delay(100);
+  fillAir();
+  delay(1000);
+  stopAirFlow();
+  delay(1000);
 }
 
 void launchFlight() {
@@ -148,10 +105,10 @@ void fillAir() {
     Serial.println("WARNING: Air has already been filled !");
     return;
   }
-  if (waterFilled == false) {
+  /*if (waterFilled == false) {
     Serial.println("WARNING: Water hasn't been filled yet !");
     return;
-  }
+  }*/
 
   launching_state = FILLING_AIR;
   digitalWrite(AIR_DISTRIBUTOR_PIN, HIGH);
@@ -176,12 +133,16 @@ void stopWaterFlow() {
   // Stops the water flow
   digitalWrite(WATER_VALVE_PIN, LOW);
 
+  Serial.println("Water valve closed");
+
   launching_state = STAND_BY;
 }
 
 void stopAirFlow() {
   // Stops the air flow
   digitalWrite(AIR_DISTRIBUTOR_PIN, LOW);
+
+  Serial.println("Air valve closed");
 
   launching_state = STAND_BY;
 }
