@@ -177,18 +177,23 @@ void onDataReceived(unsigned char *mac_addr, unsigned char *data, uint8_t len) {
 // Add these globals for chunking
 uint16_t i2cSendOffset = 0;
 uint16_t i2cSendPacketSize = 0;
+unsigned long lastI2CActivity = 0; // Track last I2C activity time
 
 // Modify onI2CRequest to send up to 32 bytes at a time
 void onI2CRequest() {
+  lastI2CActivity = millis();
   if (gatewayState.packetQueueSize > 0) {
     uint8_t *packet = gatewayState.packetQueue[gatewayState.currentPacketIndex];
     size_t packetSize = sizeof(FlightData);
 
-    // Calculate how many bytes to send this time (max 31 for data)
+    // Calculate how many bytes to send this time (max GATEWAY_I2C_CHUNK_SIZE-1
+    // for data)
     size_t bytesLeft = packetSize - i2cSendOffset;
-    size_t chunkSize = bytesLeft > 31 ? 31 : bytesLeft;
+    size_t chunkSize = bytesLeft > (GATEWAY_I2C_CHUNK_SIZE - 1)
+                           ? (GATEWAY_I2C_CHUNK_SIZE - 1)
+                           : bytesLeft;
 
-    uint8_t chunk[32];
+    uint8_t chunk[GATEWAY_I2C_CHUNK_SIZE];
     chunk[0] = (uint8_t)i2cSendOffset; // Offset header
     memcpy(chunk + 1, packet + i2cSendOffset, chunkSize);
 
@@ -202,15 +207,16 @@ void onI2CRequest() {
       i2cSendOffset = 0;
     }
   } else {
-    // No packet available, send a single zero byte
-    uint8_t empty[32] = {0};
-    Wire.write(empty, 32);
+    // No packet available, send a single zero packet
+    uint8_t empty[GATEWAY_I2C_CHUNK_SIZE] = {0};
+    Wire.write(empty, GATEWAY_I2C_CHUNK_SIZE);
     i2cBytesSentTotal += 1; // Count empty packet as one byte anyway
     i2cSendOffset = 0;
   }
 }
 
 void onI2CReceive(int numBytes) {
+  lastI2CActivity = millis();
   if (numBytes > 0) {
     i2cBytesReceivedTotal += numBytes; // NEW: Count incoming I2C bytes
     uint8_t *packet = (uint8_t *)malloc(numBytes);
@@ -254,6 +260,19 @@ void initializeEspNow() {
   }
 }
 
+void initI2CSlave() {
+  Wire.end(); // In case already initialized
+  delay(10);
+  Wire.begin(GATEWAY_I2C_ADDRESS, 21, 22,
+             I2C_BUS_SPEED); // Use defined bus speed and pins
+  Wire.onRequest(onI2CRequest);
+  Wire.onReceive(onI2CReceive);
+  lastI2CActivity = millis();
+  Serial.print("I2C slave initialized at ");
+  Serial.print(I2C_BUS_SPEED);
+  Serial.println(" Hz.");
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.println();
@@ -277,10 +296,7 @@ void setup() {
 
   delay(500); // Wait for horizon to start I2C master
   Serial.println("Initializing I2C as slave...");
-  // Initialize I2C as slave
-  Wire.begin(GATEWAY_I2C_ADDRESS);
-  Wire.onRequest(onI2CRequest);
-  Wire.onReceive(onI2CReceive);
+  initI2CSlave();
 }
 
 void debugSerialToEspNow() {
@@ -331,7 +347,6 @@ void debugAddSampleDataToQueue() {
 
 void loop() {
   static Timer sendTimer(DATA_SEND_INTERVAL); // Data send frequency
-
   static Timer debugSampleData(
       DATA_SEND_INTERVAL); // Debug sample data frequency
 
@@ -357,6 +372,12 @@ void loop() {
 
   if (debugSampleData.expired()) {
     // debugAddSampleDataToQueue();
+  }
+
+  // I2C watchdog: re-init if no activity for 5 seconds
+  if (millis() - lastI2CActivity > 5000) {
+    Serial.println("I2C inactivity detected, re-initializing I2C slave...");
+    initI2CSlave();
   }
 
   printDataRates();

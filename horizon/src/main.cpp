@@ -18,17 +18,32 @@ PocketBaseClient pbClient(DEATH_STAR_POCKETBASE_HOST,
                           DEATH_STAR_POCKETBASE_PORT);
 
 // --- I2C Communication ---
-void initI2C() {
-  Wire.begin(); // ESP32: You can use default pins (SDA=21, SCL=22) or set
+void i2cBusRecovery() {
+  pinMode(21, OUTPUT); // SDA
+  pinMode(22, OUTPUT); // SCL
+  digitalWrite(21, HIGH);
+  for (int i = 0; i < 9; ++i) {
+    digitalWrite(22, HIGH);
+    delayMicroseconds(5);
+    digitalWrite(22, LOW);
+    delayMicroseconds(5);
+  }
+  digitalWrite(21, HIGH);
+  digitalWrite(22, HIGH);
+}
 
-  delay(1000);
-  Serial.println("I2C Master ready.");
+void initI2C() {
+  i2cBusRecovery();
+  Wire.begin(21, 22, I2C_BUS_SPEED); // Use defined bus speed and pins
+  Serial.print("I2C Master ready at ");
+  Serial.print(I2C_BUS_SPEED);
+  Serial.println(" Hz.");
 }
 
 void handleFlightDataChunk(uint8_t *chunk, int bytesRead);
 
 size_t requestFlightDataChunk() {
-  uint8_t chunk[32];
+  uint8_t chunk[GATEWAY_I2C_CHUNK_SIZE];
   size_t bytesRequested = sizeof(chunk);
   Wire.requestFrom(GATEWAY_I2C_ADDRESS, (int)bytesRequested);
   int bytesAvailable = Wire.available();
@@ -106,34 +121,30 @@ JsonDocument launcher;
 // --- Main Logic ---
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  initI2C();
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    if (event == SYSTEM_EVENT_STA_DISCONNECTED) {
+      Serial.println("WiFi disconnected, attempting to reconnect...");
+      WiFi.reconnect();
+    }
+  });
   Serial.print("Connecting to WiFi");
 
   unsigned long startAttemptTime = millis();
   const unsigned long wifiTimeout = 30000;
 
-  while (WiFi.status() != WL_CONNECTED &&
-         millis() - startAttemptTime < wifiTimeout) {
+  while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
-  }
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\nWiFi connection failed!");
-    Serial.print("WiFi status: ");
-    if (WiFi.status() == WL_NO_SSID_AVAIL) {
-      Serial.println("No SSID available");
-    } else if (WiFi.status() == WL_CONNECT_FAILED) {
-      Serial.println("Connection failed");
-    } else if (WiFi.status() == WL_DISCONNECTED) {
-      Serial.println("Disconnected");
-    } else {
-      Serial.println("Unknown status: " + String(WiFi.status()));
+    if (millis() - startAttemptTime > wifiTimeout) {
+      Serial.println("\nWiFi connection timed out!");
+      Serial.println("Restarting WIFI in 2 seconds...");
+      delay(2000);
+      WiFi.disconnect();
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+      startAttemptTime = millis(); // Reset attempt time
     }
-    Serial.println("Restarting in 2 seconds...");
-    delay(2000);
-    ESP.restart();
-    return;
   }
 
   Serial.println("\nWiFi connected!");
@@ -163,7 +174,7 @@ void setup() {
     Serial.println("PocketBase login failed!");
   }
 
-  initI2C();
+  Serial.println("Horizon ready");
 }
 
 void loop() {
