@@ -9,8 +9,11 @@
 #include <EnduranceConfig.h>
 #include <core.h>
 
-FlightData flightData;
-uint8_t *flightDataBytes = (uint8_t *)&flightData;
+FlightData flightDataReceived;
+FlightData currentFlightData = {0};
+FlightData previousFlightData = {0};
+
+uint8_t *flightDataBytes = (uint8_t *)&flightDataReceived;
 size_t flightDataOffset = 0;
 bool hasReceivedFlightData = false;
 
@@ -86,7 +89,10 @@ void handleFlightDataChunk(uint8_t *chunk, int bytesRead) {
       return; // Ignore first packet has its probably corrupted
     }
     Serial.println("Received FlightData:");
-    printFlightData(flightData);
+    // printFlightData(flightDataReceived);
+    previousFlightData = currentFlightData; // Store previous data
+    currentFlightData = flightDataReceived;
+
     flightDataOffset = 0; // Ready for next packet
   }
 }
@@ -178,15 +184,46 @@ void setup() {
   Serial.println("Horizon ready");
 }
 
+void handlePadDataChunk(uint8_t *chunk, int bytesRead) {
+  Serial.print("[PAD I2C] Received ");
+  Serial.print(bytesRead);
+  Serial.println(" bytes from pad:");
+  for (int i = 0; i < bytesRead; ++i) {
+    Serial.print("0x");
+    if (chunk[i] < 16)
+      Serial.print("0");
+    Serial.print(chunk[i], HEX);
+    Serial.print(" ");
+    if ((i + 1) % 16 == 0)
+      Serial.println();
+  }
+  Serial.println();
+}
+
+size_t requestPadDataChunk() {
+  uint8_t chunk[PAD_I2C_CHUNK_SIZE];
+  size_t bytesRequested = sizeof(chunk);
+  Wire.requestFrom(PAD_I2C_ADDRESS, (int)bytesRequested);
+  int bytesAvailable = Wire.available();
+  int bytesRead = Wire.readBytes((char *)chunk, bytesRequested);
+  handlePadDataChunk(chunk, bytesRead);
+  return bytesRead;
+}
+
 void loop() {
   // Poll for SSE events
   pbClient.pollRealtime();
 
-  static Timer pollTimer(DATA_SEND_INTERVAL / 4); // Polls 4 times more often
-                                                  // than data send frequency
-  if (pollTimer.expired()) {
-    int bytesRead = requestFlightDataChunk();
-    // Place for additional logic (e.g., error handling, state machines, etc.)
+  static Timer gatewayTimer(DATA_SEND_INTERVAL / 4); // Gateway poll timer
+  static Timer padTimer(
+      DATA_SEND_INTERVAL /
+      2); // Pad poll timer, half the frequency of gateway as there is less data
+
+  if (gatewayTimer.expired()) {
+    requestFlightDataChunk();
+  }
+  if (padTimer.expired()) {
+    requestPadDataChunk();
   }
 
   debugSendCommandToGateway();
