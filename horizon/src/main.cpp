@@ -34,7 +34,8 @@ void i2cBusRecovery() {
 
 void initI2C() {
   i2cBusRecovery();
-  Wire.begin(21, 22, I2C_BUS_SPEED); // Use defined bus speed and pins
+  Wire.begin();
+
   Serial.print("I2C Master ready at ");
   Serial.print(I2C_BUS_SPEED);
   Serial.println(" Hz.");
