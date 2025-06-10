@@ -1,140 +1,28 @@
 #include "PocketBaseClient.h"
+#include "i2c_utils.h"
+#include "state.h"
+#include "wifi_utils.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Timer.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include <functional>
 
 // Core Endurance library
 #include <EnduranceConfig.h>
 #include <core.h>
 
-FlightData flightDataReceived;
-FlightData currentFlightData = {0};
-FlightData previousFlightData = {0};
-
-uint8_t *flightDataBytes = (uint8_t *)&flightDataReceived;
-size_t flightDataOffset = 0;
-bool hasReceivedFlightData = false;
+// Provide definitions for the global variables used in i2c_utils.cpp
+FlightDataState flightDataState;
+DataRateCounters dataRateCounter = {0, 0, 0, 0, 0};
 
 PocketBaseClient pbClient(DEATH_STAR_POCKETBASE_HOST,
                           DEATH_STAR_POCKETBASE_PORT);
 
-// Data rate counters for I2C IN
-static unsigned long padBytesReceived = 0;
-static unsigned long gatewayBytesReceived = 0;
-static unsigned long lastRatePrint = 0;
-static unsigned long padLastRate = 0;
-static unsigned long gatewayLastRate = 0;
-
-// --- I2C Communication ---
-void i2cBusRecovery() {
-  pinMode(21, OUTPUT); // SDA
-  pinMode(22, OUTPUT); // SCL
-  digitalWrite(21, HIGH);
-  for (int i = 0; i < 9; ++i) {
-    digitalWrite(22, HIGH);
-    delayMicroseconds(5);
-    digitalWrite(22, LOW);
-    delayMicroseconds(5);
-  }
-  digitalWrite(21, HIGH);
-  digitalWrite(22, HIGH);
-}
-
-void initI2C() {
-  i2cBusRecovery();
-  Wire.begin();
-  Wire.setClock(I2C_BUS_SPEED); // Set I2C bus speed
-  Wire.setTimeOut(I2C_TIMEOUT);
-  Serial.print("I2C Master ready at ");
-  Serial.print(I2C_BUS_SPEED);
-  Serial.println(" Hz.");
-}
-
-void i2CWorkaround() {
-  // On the ESP32-S2, there is a known issue where the I2C bus frequency can
-  // drop to ~5 kHz This is a simple workaround to ensure the I2C bus is
-  // functional Source: https://github.com/espressif/arduino-esp32/issues/8480
-  Wire.setClock(I2C_BUS_SPEED_WORKAROUND);
-  Wire.setClock(I2C_BUS_SPEED); // Restore original speed
-}
-
-void handleFlightDataChunk(uint8_t *chunk, int bytesRead);
-
-size_t requestFlightDataChunk() {
-  uint8_t chunk[GATEWAY_I2C_CHUNK_SIZE];
-  size_t bytesRequested = sizeof(chunk);
-  Wire.requestFrom(GATEWAY_I2C_ADDRESS, (int)bytesRequested);
-  int bytesRead = Wire.readBytes((char *)chunk, bytesRequested);
-
-  // Print chunk for debugging
-  /*for (int i = 0; i < bytesRead; ++i) {
-    Serial.print(chunk[i], HEX);
-    Serial.print(" ");
-  }
-  Serial.println();*/
-
-  // Check for "no data" marker: all bytes are 0 or all bytes are 0xFF
-  bool allZero = true, allFF = true;
-  for (int i = 0; i < bytesRead; ++i) {
-    if (chunk[i] != 0)
-      allZero = false;
-    if (chunk[i] != 0xFF)
-      allFF = false;
-  }
-  if (allZero || allFF) {
-    handleFlightDataChunk(chunk, 0); // No data available
-    gatewayBytesReceived += 1;
-    return 0;
-  }
-  gatewayBytesReceived += bytesRead;
-  handleFlightDataChunk(chunk, bytesRead);
-  return bytesRead;
-}
-
 // --- Data Handling ---
-void handleFlightDataChunk(uint8_t *chunk, int bytesRead) {
-  // Detect a full zero packet (no data available from gateway)
-  if (bytesRead == 0) {
-    flightDataOffset = 0; // Reset offset
-    return;
-  }
 
-  if (bytesRead < 2) {
-    Serial.println("Received invalid flight data chunk, too small.");
-    return;
-  }
-
-  uint8_t offset = chunk[0];
-  size_t dataLen = bytesRead - 1;
-  if (offset + dataLen > sizeof(FlightData)) {
-    dataLen = sizeof(FlightData) - offset;
-  }
-  memcpy(flightDataBytes + offset, chunk + 1, dataLen);
-  flightDataOffset += dataLen;
-  if (flightDataOffset >= sizeof(FlightData)) {
-    if (!hasReceivedFlightData) {
-      hasReceivedFlightData = true;
-      return; // Ignore first packet has its probably corrupted
-    }
-    // Serial.println("Received FlightData:");
-    //  printFlightData(flightDataReceived);
-    previousFlightData = currentFlightData; // Store previous data
-    currentFlightData = flightDataReceived;
-
-    flightDataOffset = 0; // Ready for next packet
-  }
-}
-
-void sendCommandToGateway(const String &command) {
-  Serial.print("Sending command to gateway: ");
-  Serial.println(command);
-  Wire.beginTransmission(GATEWAY_I2C_ADDRESS);
-  Wire.write((const uint8_t *)command.c_str(), command.length());
-  Wire.endTransmission();
-}
-
+// Reads a command from Serial and sends it to the gateway
 void debugSendCommandToGateway() {
   if (Serial.available()) {
     String command = Serial.readStringUntil('\n');
@@ -145,6 +33,7 @@ void debugSendCommandToGateway() {
   }
 }
 
+// Callback for PocketBase SSE messages
 void onSSEMessage(const String &data) {
   Serial.print("[PocketBase SSE] ");
   Serial.println(data);
@@ -154,39 +43,15 @@ void onSSEMessage(const String &data) {
 
 String launcherJSON;
 JsonDocument launcher;
-
-// --- Main Logic ---
 void setup() {
   Serial.begin(115200);
   initI2C();
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
-    if (event == SYSTEM_EVENT_STA_DISCONNECTED) {
-      Serial.println("WiFi disconnected, attempting to reconnect...");
-      WiFi.reconnect();
-    }
-  });
-  Serial.print("Connecting to WiFi");
+  initWiFi([]() {}, // disconnectedCallback
+           []() {}, // connectedCallback
+           []() {}  // gotIPCallback
+  );
 
-  unsigned long startAttemptTime = millis();
-  const unsigned long wifiTimeout = 30000;
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-    if (millis() - startAttemptTime > wifiTimeout) {
-      Serial.println("\nWiFi connection timed out!");
-      Serial.println("Restarting WIFI in 2 seconds...");
-      delay(2000);
-      WiFi.disconnect();
-      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-      startAttemptTime = millis(); // Reset attempt time
-    }
-  }
-
-  Serial.println("\nWiFi connected!");
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
+  pbClient.setAuthCollection("launchers");
 
   pbClient.setAuthCollection("launchers");
   if (pbClient.login(DEATH_STAR_POCKETBASE_IDENTITY,
@@ -214,33 +79,6 @@ void setup() {
   Serial.println("Horizon ready");
 }
 
-void handlePadDataChunk(uint8_t *chunk, int bytesRead) {
-  /*Serial.print("[PAD I2C] Received ");
-  Serial.print(bytesRead);
-  Serial.println(" bytes from pad:");
-  for (int i = 0; i < bytesRead; ++i) {
-    Serial.print("0x");
-    if (chunk[i] < 16)
-      Serial.print("0");
-    Serial.print(chunk[i], HEX);
-    Serial.print(" ");
-    if ((i + 1) % 16 == 0)
-      Serial.println();
-  }
-  Serial.println();*/
-}
-
-size_t requestPadDataChunk() {
-  uint8_t chunk[PAD_I2C_CHUNK_SIZE];
-  size_t bytesRequested = sizeof(chunk);
-  Wire.requestFrom(PAD_I2C_ADDRESS, (int)bytesRequested);
-  int bytesAvailable = Wire.available();
-  int bytesRead = Wire.readBytes((char *)chunk, bytesRequested);
-  padBytesReceived += bytesRead;
-  handlePadDataChunk(chunk, bytesRead);
-  return bytesRead;
-}
-
 void loop() {
   // Poll for SSE events
   pbClient.pollRealtime();
@@ -248,7 +86,7 @@ void loop() {
   static Timer gatewayTimer(DATA_SEND_INTERVAL / 4); // Gateway poll timer
   static Timer padTimer(DATA_SEND_INTERVAL / 2);     // Pad poll timer
 
-  i2CWorkaround(); // Ensure I2C bus is functional
+  i2cWorkaround(); // Ensure I2C bus is functional
 
   if (gatewayTimer.expired()) {
     requestFlightDataChunk();
@@ -258,16 +96,16 @@ void loop() {
   }
 
   // Print I2C data rates every second
-  if (millis() - lastRatePrint > 1000) {
-    padLastRate = padBytesReceived;
-    gatewayLastRate = gatewayBytesReceived;
-    padBytesReceived = 0;
-    gatewayBytesReceived = 0;
-    lastRatePrint = millis();
+  if (millis() - dataRateCounter.lastRatePrint > 1000) {
+    dataRateCounter.padLastRate = dataRateCounter.padBytesReceived;
+    dataRateCounter.gatewayLastRate = dataRateCounter.gatewayBytesReceived;
+    dataRateCounter.padBytesReceived = 0;
+    dataRateCounter.gatewayBytesReceived = 0;
+    dataRateCounter.lastRatePrint = millis();
     Serial.print("[I2C] Pad IN: ");
-    Serial.print(padLastRate);
+    Serial.print(dataRateCounter.padLastRate);
     Serial.print(" B/s, Gateway IN: ");
-    Serial.print(gatewayLastRate);
+    Serial.print(dataRateCounter.gatewayLastRate);
     Serial.println(" B/s");
   }
 
