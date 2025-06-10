@@ -40,8 +40,4 @@ void initWiFi(const std::function<void()> &disconnectedCallback,
       startAttemptTime = millis(); // Reset attempt time
     }
   }
-
-  Serial.println("\nWiFi connected!");
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
 }

@@ -1,4 +1,5 @@
 #include "PocketBaseClient.h"
+#include "i2c_stats.h"
 #include "i2c_utils.h"
 #include "state.h"
 #include "wifi_utils.h"
@@ -15,7 +16,7 @@
 
 // Provide definitions for the global variables used in i2c_utils.cpp
 FlightDataState flightDataState;
-DataRateCounters dataRateCounter = {0, 0, 0, 0, 0};
+DataRateCounters dataRateCounters = {0, 0, 0, 0, 0};
 
 PocketBaseClient pbClient(DEATH_STAR_POCKETBASE_HOST,
                           DEATH_STAR_POCKETBASE_PORT);
@@ -85,29 +86,23 @@ void loop() {
 
   static Timer gatewayTimer(DATA_SEND_INTERVAL / 4); // Gateway poll timer
   static Timer padTimer(DATA_SEND_INTERVAL / 2);     // Pad poll timer
+  static Timer dataRateTimer(1000);                  // Data rate print timer
 
   i2cWorkaround(); // Ensure I2C bus is functional
 
   if (gatewayTimer.expired()) {
-    requestFlightDataChunk();
+    requestFlightDataChunk(dataRateCounters, flightDataState);
   }
   if (padTimer.expired()) {
-    requestPadDataChunk();
+    requestPadDataChunk(dataRateCounters, flightDataState);
   }
 
-  // Print I2C data rates every second
-  if (millis() - dataRateCounter.lastRatePrint > 1000) {
-    dataRateCounter.padLastRate = dataRateCounter.padBytesReceived;
-    dataRateCounter.gatewayLastRate = dataRateCounter.gatewayBytesReceived;
-    dataRateCounter.padBytesReceived = 0;
-    dataRateCounter.gatewayBytesReceived = 0;
-    dataRateCounter.lastRatePrint = millis();
-    Serial.print("[I2C] Pad IN: ");
-    Serial.print(dataRateCounter.padLastRate);
-    Serial.print(" B/s, Gateway IN: ");
-    Serial.print(dataRateCounter.gatewayLastRate);
-    Serial.println(" B/s");
+  computeI2CDataRates(dataRateCounters);
+
+  if (dataRateTimer.expired()) {
+    printI2CDataRates(dataRateCounters);
   }
 
   debugSendCommandToGateway();
+  printFlightData(flightDataState.currentFlightData);
 }

@@ -1,6 +1,7 @@
 #include "i2c_utils.h"
 #include "EnduranceConfig.h"
 #include "core.h"
+#include "i2c_stats.h"
 #include "state.h"
 #include <Arduino.h>
 #include <Wire.h>
@@ -10,7 +11,6 @@ constexpr int SDA_PIN = 21;
 constexpr int SCL_PIN = 22;
 
 extern FlightDataState flightDataState;
-extern DataRateCounters dataRateCounter;
 
 // Recovers the I2C bus by toggling the clock and data lines
 void i2cBusRecovery() {
@@ -45,9 +45,9 @@ void i2cWorkaround() {
 }
 
 // Handles a chunk of flight data received from the gateway
-void handleFlightDataChunk(uint8_t *chunk, int bytesRead) {
+void handleFlightDataChunk(uint8_t *chunk, int bytesRead, FlightDataState &state) {
   if (bytesRead == 0) {
-    flightDataState.flightDataOffset = 0; // Reset offset
+    state.flightDataOffset = 0; // Reset offset
     return;
   }
   if (bytesRead < 2) {
@@ -59,21 +59,21 @@ void handleFlightDataChunk(uint8_t *chunk, int bytesRead) {
   if (offset + dataLen > sizeof(FlightData)) {
     dataLen = sizeof(FlightData) - offset;
   }
-  memcpy(flightDataState.flightDataBytes + offset, chunk + 1, dataLen);
-  flightDataState.flightDataOffset += dataLen;
-  if (flightDataState.flightDataOffset >= sizeof(FlightData)) {
-    if (!flightDataState.hasReceivedFlightData) {
-      flightDataState.hasReceivedFlightData = true;
+  memcpy(state.flightDataBytes + offset, chunk + 1, dataLen);
+  state.flightDataOffset += dataLen;
+  if (state.flightDataOffset >= sizeof(FlightData)) {
+    if (!state.hasReceivedFlightData) {
+      state.hasReceivedFlightData = true;
       return; // Ignore first packet as it's probably corrupted
     }
-    flightDataState.previousFlightData = flightDataState.currentFlightData;
-    flightDataState.currentFlightData = flightDataState.flightDataReceived;
-    flightDataState.flightDataOffset = 0; // Ready for next packet
+    state.previousFlightData = state.currentFlightData;
+    state.currentFlightData = state.flightDataReceived;
+    state.flightDataOffset = 0; // Ready for next packet
   }
 }
 
 // Requests a chunk of flight data from the gateway over I2C
-size_t requestFlightDataChunk() {
+size_t requestFlightDataChunk(DataRateCounters &counter, FlightDataState &state) {
   uint8_t chunk[GATEWAY_I2C_CHUNK_SIZE];
   size_t bytesRequested = sizeof(chunk);
   Wire.requestFrom(GATEWAY_I2C_ADDRESS, (int)bytesRequested);
@@ -93,17 +93,17 @@ size_t requestFlightDataChunk() {
       allFF = false;
   }
   if (allZero || allFF) {
-    handleFlightDataChunk(chunk, 0); // No data available
-    dataRateCounter.gatewayBytesReceived += 1;
+    handleFlightDataChunk(chunk, 0, state); // No data available
+    counter.gatewayBytesReceived += 1;
     return 0;
   }
-  dataRateCounter.gatewayBytesReceived += bytesRead;
-  handleFlightDataChunk(chunk, bytesRead);
+  counter.gatewayBytesReceived += bytesRead;
+  handleFlightDataChunk(chunk, bytesRead, state);
   return bytesRead;
 }
 
 // Handles a chunk of pad data received from the pad
-void handlePadDataChunk(uint8_t *chunk, int bytesRead) {
+void handlePadDataChunk(uint8_t *chunk, int bytesRead, FlightDataState &state) {
 #ifdef DEBUG
   Serial.print("[PAD I2C] Received ");
   Serial.print(bytesRead);
@@ -122,14 +122,14 @@ void handlePadDataChunk(uint8_t *chunk, int bytesRead) {
 }
 
 // Requests a chunk of pad data from the pad over I2C
-size_t requestPadDataChunk() {
+size_t requestPadDataChunk(DataRateCounters &counter, FlightDataState &state) {
   uint8_t chunk[PAD_I2C_CHUNK_SIZE];
   size_t bytesRequested = sizeof(chunk);
   Wire.requestFrom(PAD_I2C_ADDRESS, (int)bytesRequested);
   int bytesAvailable = Wire.available();
   int bytesRead = Wire.readBytes((char *)chunk, bytesRequested);
-  dataRateCounter.padBytesReceived += bytesRead;
-  handlePadDataChunk(chunk, bytesRead);
+  counter.padBytesReceived += bytesRead;
+  handlePadDataChunk(chunk, bytesRead, state);
   return bytesRead;
 }
 
