@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <core.h>
+#include <Timer.h>
 
 #include "DFRobot_MPX5700.h"
 #define I2C_ADDRESS 0x16
@@ -19,6 +20,9 @@ enum launchingStates { STAND_BY, FILLING_AIR, FILLING_WATER, READY_TO_LAUNCH };
 
 enum launchingStates launching_state = STAND_BY;
 
+WaterLoadingData waterLoadingData;
+AirLoadingData airLoadingData;
+
 int sensorPin = 2;
 volatile long pulse;
 
@@ -34,12 +38,15 @@ volatile unsigned long i2cRequestCount = 0;
 unsigned long lastRatePrint = 0;
 unsigned long lastRate = 0;
 
+Timer timer(200);
+
 // Forward declarations
 void increase();
 void stopWaterFlow();
 void stopAirFlow();
 void fillWater();
 void fillAir();
+void updateLoadingData();
 void prepareDummyData();
 void onI2CRequest();
 
@@ -48,6 +55,14 @@ void prepareDummyData() {
   for (int i = 0; i < PAD_I2C_CHUNK_SIZE; ++i) {
     i2cDummyData[i] = i;
   }
+}
+
+void updateLoadingData() {
+  waterLoadingData.waterVolume = pulse / 660;
+  waterLoadingData.timestamp = millis();
+
+  airLoadingData.pressure = mpx5700.getPressureValue_kpa(1);
+  airLoadingData.timestamp = millis();
 }
 
 void onI2CRequest() {
@@ -65,7 +80,8 @@ void setup() {
 
   pinMode(sensorPin, INPUT);
 
-  // Set up pulse incremental
+  // Set up interrupt to increment pulse each time the sensor detects water flowing,
+  // allowing to deduce the volume that passed through
   attachInterrupt(digitalPinToInterrupt(sensorPin), increase, RISING);
 
   // Initialize I2C as slave
@@ -94,6 +110,11 @@ void setup() {
 }
 
 void loop() {
+  // Update loading data every 200 ms
+  if (timer.expired()) {
+    updateLoadingData();
+  }
+
   // Update dummy data periodically if needed (example: every 100ms)
   if (millis() - lastDummyUpdate > 100) {
     prepareDummyData();
@@ -154,14 +175,17 @@ void fillAir() {
     Serial.println("WARNING: Air has already been filled !");
     return;
   }
-  /*if (waterFilled == false) {
+  if (waterFilled == false) {
     Serial.println("WARNING: Water hasn't been filled yet !");
     return;
-  }*/
+  }
 
-  launching_state = FILLING_AIR;
   digitalWrite(AIR_DISTRIBUTOR_PIN, HIGH);
   Serial.println("Starting to fill air...");
+
+  launching_state = FILLING_AIR;
+
+  airLoadingData.isLoading = true;
 }
 
 void fillWater() {
@@ -172,10 +196,12 @@ void fillWater() {
   }
   digitalWrite(CANCEL_PIN, LOW);
 
-  launching_state = FILLING_WATER;
-
   digitalWrite(WATER_VALVE_PIN, HIGH);
   Serial.println("Starting to fill water...");
+
+  launching_state = FILLING_WATER;
+
+  waterLoadingData.isLoading = true;
 }
 
 void stopWaterFlow() {
@@ -183,6 +209,8 @@ void stopWaterFlow() {
   digitalWrite(WATER_VALVE_PIN, LOW);
 
   Serial.println("Water valve closed");
+
+  waterLoadingData.isLoading = false;
 
   launching_state = STAND_BY;
 }
@@ -192,6 +220,8 @@ void stopAirFlow() {
   digitalWrite(AIR_DISTRIBUTOR_PIN, LOW);
 
   Serial.println("Air valve closed");
+
+  airLoadingData.isLoading = false;
 
   launching_state = STAND_BY;
 }
