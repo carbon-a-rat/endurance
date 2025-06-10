@@ -4,8 +4,10 @@
 #include "wifi_utils.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <NTPClient.h>
 #include <Timer.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <Wire.h>
 #include <functional>
 
@@ -16,6 +18,10 @@
 // Provide definitions for the global variables used in i2c_utils.cpp
 FlightDataState flightDataState;
 DataRateCounters dataRateCounters = {0, 0, 0, 0, 0};
+
+WiFiUDP ntpUdp;
+NTPClient ntpClient(ntpUdp, "pool.ntp.org", 0,
+                    60000); // NTP client for time synchronization
 
 // --- Data Handling ---
 
@@ -35,7 +41,14 @@ void setup() {
   initI2C();
   initWiFi([]() {}, // disconnectedCallback
            []() {}, // connectedCallback
-           []() {}  // gotIPCallback
+           []() {
+             ntpClient.begin();  // Start NTP client after WiFi is connected
+             ntpClient.update(); // Update time immediately
+             Serial.print("NTP Time: ");
+             Serial.print(ntpClient.getFormattedTime());
+             Serial.print(", Epoch: ");
+             Serial.println(ntpClient.getEpochTime());
+           } // gotIPCallback
   );
 
   Serial.println("Horizon ready");
