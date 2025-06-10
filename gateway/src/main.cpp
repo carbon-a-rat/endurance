@@ -207,10 +207,10 @@ void onI2CRequest() {
       i2cSendOffset = 0;
     }
   } else {
-    // No packet available, send a single zero packet
-    uint8_t empty[GATEWAY_I2C_CHUNK_SIZE] = {0};
-    Wire.write(empty, GATEWAY_I2C_CHUNK_SIZE);
-    i2cBytesSentTotal += 1; // Count empty packet as one byte anyway
+    // No packet available, send a 1-byte status code (0xFF = no data)
+    uint8_t empty = 0xFF;
+    Wire.write(&empty, 1);
+    i2cBytesSentTotal += 1;
     i2cSendOffset = 0;
   }
 }
@@ -265,6 +265,7 @@ void initI2CSlave() {
   delay(10);
   Wire.begin(GATEWAY_I2C_ADDRESS, 21, 22,
              I2C_BUS_SPEED); // Use defined bus speed and pins
+  Wire.setTimeOut(I2C_TIMEOUT);
   Wire.onRequest(onI2CRequest);
   Wire.onReceive(onI2CReceive);
   lastI2CActivity = millis();

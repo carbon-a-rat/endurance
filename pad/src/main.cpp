@@ -71,6 +71,7 @@ void setup() {
   // Initialize I2C as slave
   Wire.begin(PAD_I2C_ADDRESS);
   Wire.setClock(I2C_BUS_SPEED);
+  Wire.setWireTimeout(I2C_TIMEOUT);
   Wire.onRequest(onI2CRequest);
   Serial.print("I2C Slave ready at address 0x");
   Serial.println(PAD_I2C_ADDRESS, HEX);

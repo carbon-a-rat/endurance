@@ -20,6 +20,13 @@ bool hasReceivedFlightData = false;
 PocketBaseClient pbClient(DEATH_STAR_POCKETBASE_HOST,
                           DEATH_STAR_POCKETBASE_PORT);
 
+// Data rate counters for I2C IN
+static unsigned long padBytesReceived = 0;
+static unsigned long gatewayBytesReceived = 0;
+static unsigned long lastRatePrint = 0;
+static unsigned long padLastRate = 0;
+static unsigned long gatewayLastRate = 0;
+
 // --- I2C Communication ---
 void i2cBusRecovery() {
   pinMode(21, OUTPUT); // SDA
@@ -38,7 +45,8 @@ void i2cBusRecovery() {
 void initI2C() {
   i2cBusRecovery();
   Wire.begin();
-
+  Wire.setClock(I2C_BUS_SPEED); // Set I2C bus speed
+  Wire.setTimeOut(I2C_TIMEOUT);
   Serial.print("I2C Master ready at ");
   Serial.print(I2C_BUS_SPEED);
   Serial.println(" Hz.");
@@ -50,8 +58,29 @@ size_t requestFlightDataChunk() {
   uint8_t chunk[GATEWAY_I2C_CHUNK_SIZE];
   size_t bytesRequested = sizeof(chunk);
   Wire.requestFrom(GATEWAY_I2C_ADDRESS, (int)bytesRequested);
-  int bytesAvailable = Wire.available();
   int bytesRead = Wire.readBytes((char *)chunk, bytesRequested);
+
+  // Print chunk for debugging
+  /*for (int i = 0; i < bytesRead; ++i) {
+    Serial.print(chunk[i], HEX);
+    Serial.print(" ");
+  }
+  Serial.println();*/
+
+  // Check for "no data" marker: all bytes are 0 or all bytes are 0xFF
+  bool allZero = true, allFF = true;
+  for (int i = 0; i < bytesRead; ++i) {
+    if (chunk[i] != 0)
+      allZero = false;
+    if (chunk[i] != 0xFF)
+      allFF = false;
+  }
+  if (allZero || allFF) {
+    handleFlightDataChunk(chunk, 0); // No data available
+    gatewayBytesReceived += 1;
+    return 0;
+  }
+  gatewayBytesReceived += bytesRead;
   handleFlightDataChunk(chunk, bytesRead);
   return bytesRead;
 }
@@ -59,23 +88,16 @@ size_t requestFlightDataChunk() {
 // --- Data Handling ---
 void handleFlightDataChunk(uint8_t *chunk, int bytesRead) {
   // Detect a full zero packet (no data available from gateway)
-  bool allZero = true;
-  for (int i = 0; i < bytesRead; ++i) {
-    if (chunk[i] != 0) {
-      allZero = false;
-      break;
-    }
-  }
-  if (allZero) {
-    // No data received, reset offset
-    flightDataOffset = 0;
+  if (bytesRead == 0) {
+    flightDataOffset = 0; // Reset offset
     return;
   }
+
   if (bytesRead < 2) {
-    Serial.println("Error: Not enough bytes received from I2C slave.");
-    Serial.println("No data received.");
+    Serial.println("Received invalid flight data chunk, too small.");
     return;
   }
+
   uint8_t offset = chunk[0];
   size_t dataLen = bytesRead - 1;
   if (offset + dataLen > sizeof(FlightData)) {
@@ -88,8 +110,8 @@ void handleFlightDataChunk(uint8_t *chunk, int bytesRead) {
       hasReceivedFlightData = true;
       return; // Ignore first packet has its probably corrupted
     }
-    Serial.println("Received FlightData:");
-    // printFlightData(flightDataReceived);
+    // Serial.println("Received FlightData:");
+    //  printFlightData(flightDataReceived);
     previousFlightData = currentFlightData; // Store previous data
     currentFlightData = flightDataReceived;
 
@@ -185,7 +207,7 @@ void setup() {
 }
 
 void handlePadDataChunk(uint8_t *chunk, int bytesRead) {
-  Serial.print("[PAD I2C] Received ");
+  /*Serial.print("[PAD I2C] Received ");
   Serial.print(bytesRead);
   Serial.println(" bytes from pad:");
   for (int i = 0; i < bytesRead; ++i) {
@@ -197,7 +219,7 @@ void handlePadDataChunk(uint8_t *chunk, int bytesRead) {
     if ((i + 1) % 16 == 0)
       Serial.println();
   }
-  Serial.println();
+  Serial.println();*/
 }
 
 size_t requestPadDataChunk() {
@@ -206,6 +228,7 @@ size_t requestPadDataChunk() {
   Wire.requestFrom(PAD_I2C_ADDRESS, (int)bytesRequested);
   int bytesAvailable = Wire.available();
   int bytesRead = Wire.readBytes((char *)chunk, bytesRequested);
+  padBytesReceived += bytesRead;
   handlePadDataChunk(chunk, bytesRead);
   return bytesRead;
 }
@@ -215,15 +238,27 @@ void loop() {
   pbClient.pollRealtime();
 
   static Timer gatewayTimer(DATA_SEND_INTERVAL / 4); // Gateway poll timer
-  static Timer padTimer(
-      DATA_SEND_INTERVAL /
-      2); // Pad poll timer, half the frequency of gateway as there is less data
+  static Timer padTimer(DATA_SEND_INTERVAL / 2);     // Pad poll timer
 
   if (gatewayTimer.expired()) {
     requestFlightDataChunk();
   }
   if (padTimer.expired()) {
     requestPadDataChunk();
+  }
+
+  // Print I2C data rates every second
+  if (millis() - lastRatePrint > 1000) {
+    padLastRate = padBytesReceived;
+    gatewayLastRate = gatewayBytesReceived;
+    padBytesReceived = 0;
+    gatewayBytesReceived = 0;
+    lastRatePrint = millis();
+    Serial.print("[I2C] Pad IN: ");
+    Serial.print(padLastRate);
+    Serial.print(" B/s, Gateway IN: ");
+    Serial.print(gatewayLastRate);
+    Serial.println(" B/s");
   }
 
   debugSendCommandToGateway();

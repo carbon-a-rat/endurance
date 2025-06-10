@@ -8,6 +8,7 @@ const long unsigned LED_BLINK_DELAY = 1000 / LED_BLINK_FREQUENCY;
 
 // I2C addresses for gateway and pad
 const int I2C_BUS_SPEED = 400000; // 400 kHz fast mode
+const int I2C_TIMEOUT = 25;
 
 const int GATEWAY_I2C_CHUNK_SIZE = 64; // bytes per I2C transfer
 const char GATEWAY_I2C_ADDRESS = 0x03;
