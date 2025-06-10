@@ -52,6 +52,14 @@ void initI2C() {
   Serial.println(" Hz.");
 }
 
+void i2CWorkaround() {
+  // On the ESP32-S2, there is a known issue where the I2C bus frequency can
+  // drop to ~5 kHz This is a simple workaround to ensure the I2C bus is
+  // functional Source: https://github.com/espressif/arduino-esp32/issues/8480
+  Wire.setClock(I2C_BUS_SPEED_WORKAROUND);
+  Wire.setClock(I2C_BUS_SPEED); // Restore original speed
+}
+
 void handleFlightDataChunk(uint8_t *chunk, int bytesRead);
 
 size_t requestFlightDataChunk() {
@@ -239,6 +247,8 @@ void loop() {
 
   static Timer gatewayTimer(DATA_SEND_INTERVAL / 4); // Gateway poll timer
   static Timer padTimer(DATA_SEND_INTERVAL / 2);     // Pad poll timer
+
+  i2CWorkaround(); // Ensure I2C bus is functional
 
   if (gatewayTimer.expired()) {
     requestFlightDataChunk();
