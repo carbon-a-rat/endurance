@@ -1,3 +1,4 @@
+#pragma once
 #define PROBE_MAC_ADDRESS "1A:2B:3C:4D:5E:6F"
 #define GATEWAY_MAC_ADDRESS "12:34:56:78:9A:BC"
 
