@@ -4,16 +4,16 @@
 #include <Timer.h>
 
 #include "DFRobot_MPX5700.h"
-#define I2C_ADDRESS 0x16
+#define AIR_SENSOR_I2C_ADDRESS 0x16
 
 #define CANCEL_PIN 13
 #define AIR_DISTRIBUTOR_PIN 12
 #define CYLINDER_PIN 11
 #define WATER_VALVE_PIN 10
 
-DFRobot_MPX5700 mpx5700(&Wire, I2C_ADDRESS);
+DFRobot_MPX5700 mpx5700(&Wire, AIR_SENSOR_I2C_ADDRESS);
 
-const float targetAirPressure = 200.0; // in kPa
+const float targetAirPressure = 300.0; // in kPa
 float targetWaterVolume = 0.5;         // in L
 
 enum launchingStates { STAND_BY, FILLING_AIR, FILLING_WATER, READY_TO_LAUNCH };
@@ -47,6 +47,7 @@ void stopWaterFlow();
 void stopAirFlow();
 void fillWater();
 void fillAir();
+void cancelFlight();
 void updateLoadingData();
 void prepareDummyData();
 void onI2CRequest();
@@ -65,9 +66,12 @@ void updateLoadingData() {
 
   airLoadingData.pressure = mpx5700.getPressureValue_kpa(1);
   airLoadingData.timestamp = millis();
+
+  Serial.println(airLoadingData.pressure);
 }
 
 void onI2CRequest() {
+  return;
   // Only send already-prepared data, do not print or compute here
   Wire.write(i2cDummyData, PAD_I2C_CHUNK_SIZE);
   i2cRequestCount++;
@@ -87,17 +91,15 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(sensorPin), increase, RISING);
 
   // Initialize I2C as slave
-  Wire.begin(PAD_I2C_ADDRESS);
-  Wire.setClock(I2C_BUS_SPEED);
-  Wire.setWireTimeout(I2C_TIMEOUT);
-  Wire.onRequest(onI2CRequest);
-  Serial.print("I2C Slave ready at address 0x");
-  Serial.println(PAD_I2C_ADDRESS, HEX);
+  //Wire.begin(PAD_I2C_ADDRESS);
+  //Wire.setClock(I2C_BUS_SPEED);
+  //Wire.setWireTimeout(I2C_TIMEOUT);
+  //Wire.onRequest(onI2CRequest);
+  //Serial.print("I2C Slave ready at address 0x");
+  //Serial.println(PAD_I2C_ADDRESS, HEX);
 
-  prepareDummyData();
+  //prepareDummyData();
 
-  // ** Uncomment to use pressure sensor
-  /*
   while (false == mpx5700.begin()) {
     Serial.println("i2c begin fail,please check connect!");
     delay(1000);
@@ -105,10 +107,11 @@ void setup() {
   Serial.println("i2c begin success");
 
   mpx5700.setMeanSampleSize(5);
-
-  */
-
-  Serial.println("Setup done.");
+  
+  Serial.println("Setup done. Filling air in 5 sec");
+  delay(5000);
+  fillAir();
+  
 }
 
 void loop() {
@@ -199,10 +202,13 @@ void fillAir() {
     Serial.println("WARNING: Air has already been filled !");
     return;
   }
-  if (waterFilled == false) {
+  /*if (waterFilled == false) {
     Serial.println("WARNING: Water hasn't been filled yet !");
     return;
-  }
+  }*/
+
+  // Closes the circuit.
+  digitalWrite(CANCEL_PIN, LOW);
 
   digitalWrite(AIR_DISTRIBUTOR_PIN, HIGH);
   Serial.println("Starting to fill air...");
@@ -222,6 +228,7 @@ void fillWater() {
   // Resets the pulse to start counting again.
   pulse = 0;
 
+  // Closes the circuit.
   digitalWrite(CANCEL_PIN, LOW);
 
   digitalWrite(WATER_VALVE_PIN, HIGH);
