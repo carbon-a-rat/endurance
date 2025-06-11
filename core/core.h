@@ -41,5 +41,21 @@ struct FlightData {
 };
 #pragma pack(pop)
 
+#pragma pack(push, 1)
+struct WaterLoadingData {
+  long unsigned timestamp;
+  float waterVolume;
+  bool isLoading;
+};
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+struct AirLoadingData {
+  long unsigned timestamp;
+  float pressure;
+  bool isLoading;
+};
+#pragma pack(pop)
+
 // Only declare here, do not define!
 void printFlightData(const FlightData &flightData);
