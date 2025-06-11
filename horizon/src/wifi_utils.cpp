@@ -7,13 +7,11 @@
 void initWiFi(const std::function<void()> &disconnectedCallback,
               const std::function<void()> &connectedCallback,
               const std::function<void()> &gotIPCallback) {
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  WiFi.onEvent([&](WiFiEvent_t event, WiFiEventInfo_t info) {
-    if (event == SYSTEM_EVENT_STA_DISCONNECTED) {
-      Serial.println("WiFi disconnected, attempting to reconnect...");
-      disconnectedCallback();
-      WiFi.reconnect();
-    } else if (event == SYSTEM_EVENT_STA_CONNECTED) {
+
+  // Initialize WiFi with the provided callbacks, except for the
+  // disconnectedCallback
+  WiFi.onEvent([disconnectedCallback, connectedCallback, gotIPCallback](WiFiEvent_t event, WiFiEventInfo_t info) {
+    if (event == SYSTEM_EVENT_STA_CONNECTED) {
       Serial.println("WiFi connected!");
       connectedCallback();
     } else if (event == SYSTEM_EVENT_STA_GOT_IP) {
@@ -22,7 +20,8 @@ void initWiFi(const std::function<void()> &disconnectedCallback,
       gotIPCallback();
     }
   });
-  Serial.print("Connecting to WiFi");
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
   Serial.print("Connecting to WiFi");
 
   unsigned long startAttemptTime = millis();
@@ -40,4 +39,24 @@ void initWiFi(const std::function<void()> &disconnectedCallback,
       startAttemptTime = millis(); // Reset attempt time
     }
   }
+  Serial.println("\nWiFi connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  // Set up event handlers for WiFi events
+  // This will handle disconnection events and attempt to reconnect
+  WiFi.onEvent([disconnectedCallback, connectedCallback, gotIPCallback](WiFiEvent_t event, WiFiEventInfo_t info) {
+    if (event == SYSTEM_EVENT_STA_DISCONNECTED) {
+      Serial.println("WiFi disconnected, attempting to reconnect...");
+      disconnectedCallback();
+      WiFi.reconnect();
+    } else if (event == SYSTEM_EVENT_STA_CONNECTED) {
+      Serial.println("WiFi connected!");
+      connectedCallback();
+    } else if (event == SYSTEM_EVENT_STA_GOT_IP) {
+      Serial.print("Got IP: ");
+      Serial.println(WiFi.localIP());
+      gotIPCallback();
+    }
+  });
 }

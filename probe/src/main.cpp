@@ -261,7 +261,7 @@ void landingCheck(FlightData &flightData) {
 void resetFlightCheck() {
   if (probeState.isLanded && millis() - probeState.landingTime > 1000) {
     resetFlight();
-    startFlight(); // TESTING: Restart instantly after landing
+    // startFlight(); // TESTING: Restart instantly after landing
   }
 }
 
