@@ -21,7 +21,7 @@ const int PAD_I2C_CHUNK_SIZE = 32; // bytes per I2C transfer
 const int PROBE_DEPLOYMENT_TIME_THRESHOLD = 300;
 const int PROBE_SERVO_INITIAL_POSITION = 0;
 const int PROBE_SERVO_DEPLOYED_POSITION = 180;
-const float PROBE_DEPLOYMENT_ALTITUDE_DROP_AFTER_APOGEE = 0.2f; // meters
+const float PROBE_DEPLOYMENT_ALTITUDE_DROP_AFTER_APOGEE = 0.5f; // meters
 const float PROBE_LANDING_ALTITUDE_STABLE_WINDOW = 0.3f;        // meters
 const long PROBE_LANDING_ALTITUDE_STABLE_TIME =
     2000; // ms, how long altitude must be stable
