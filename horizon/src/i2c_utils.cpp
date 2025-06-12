@@ -31,21 +31,22 @@ void i2cBusRecovery() {
 void initI2C() {
   i2cBusRecovery();
   Wire.begin();
-  Wire.setClock(I2C_BUS_SPEED); // Set I2C bus speed
-  Wire.setTimeOut(I2C_TIMEOUT);
+  Wire.setClock(ENDURANCE_I2C_BUS_SPEED); // Set I2C bus speed
+  Wire.setTimeOut(ENDURANCE_I2C_TIMEOUT);
   Serial.print("I2C Master ready at ");
-  Serial.print(I2C_BUS_SPEED);
+  Serial.print(ENDURANCE_I2C_BUS_SPEED);
   Serial.println(" Hz.");
 }
 
 // Workaround for ESP32-S2 I2C frequency drop issue
 void i2cWorkaround() {
-  Wire.setClock(I2C_BUS_SPEED_WORKAROUND);
-  Wire.setClock(I2C_BUS_SPEED); // Restore original speed
+  Wire.setClock(ENDURANCE_I2C_BUS_SPEED_WORKAROUND);
+  Wire.setClock(ENDURANCE_I2C_BUS_SPEED); // Restore original speed
 }
 
 // Handles a chunk of flight data received from the gateway
-void handleFlightDataChunk(uint8_t *chunk, int bytesRead, FlightDataState &state) {
+void handleFlightDataChunk(uint8_t *chunk, int bytesRead,
+                           FlightDataState &state) {
   if (bytesRead == 0) {
     state.flightDataOffset = 0; // Reset offset
     return;
@@ -73,7 +74,8 @@ void handleFlightDataChunk(uint8_t *chunk, int bytesRead, FlightDataState &state
 }
 
 // Requests a chunk of flight data from the gateway over I2C
-size_t requestFlightDataChunk(DataRateCounters &counter, FlightDataState &state) {
+size_t requestFlightDataChunk(DataRateCounters &counter,
+                              FlightDataState &state) {
   uint8_t chunk[GATEWAY_I2C_CHUNK_SIZE];
   size_t bytesRequested = sizeof(chunk);
   Wire.requestFrom(GATEWAY_I2C_ADDRESS, (int)bytesRequested);
