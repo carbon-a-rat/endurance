@@ -34,3 +34,26 @@ void printFlightData(const FlightData &flightData) {
   Serial.print(flightData.isLanded);
   Serial.println();
 }
+
+void printWaterLoadingData(const WaterLoadingData &data) {
+  Serial.print("Timestamp: ");
+  Serial.print(data.timestamp);
+  Serial.print(" ms, Water Volume: ");
+  Serial.print(data.waterVolume);
+  Serial.print(" L, Water Flow Rate: ");
+  Serial.print(data.waterFlowRate);
+  Serial.print(" L/s, Error: ");
+  Serial.print(data.error);
+  Serial.print(" L, Is Loading: ");
+  Serial.println(data.isLoading ? "Yes" : "No");
+}
+void printAirLoadingData(const AirLoadingData &data) {
+  Serial.print("Timestamp: ");
+  Serial.print(data.timestamp);
+  Serial.print(" ms, Pressure: ");
+  Serial.print(data.pressure);
+  Serial.print(" kPa, Error: ");
+  Serial.print(data.error);
+  Serial.print(" kPa, Is Loading: ");
+  Serial.println(data.isLoading ? "Yes" : "No");
+}

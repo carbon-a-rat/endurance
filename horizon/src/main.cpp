@@ -18,6 +18,7 @@
 
 // Global state structures
 FlightDataState flightDataState;
+LoadingDataState loadingDataState; // Holds the state for loading data
 DataRateCounters dataRateCounters = {0, 0, 0, 0, 0};
 PocketbaseState pocketbaseState;
 
@@ -49,7 +50,7 @@ void setup() {
            []() {},                     // connectedCallback
            []() { initNtp(ntpClient); } // gotIPCallback
   );
-  initPocketbase(pocketbaseConnection, pocketbaseState);
+  // initPocketbase(pocketbaseConnection, pocketbaseState);
   Serial.println("Horizon ready");
 }
 
@@ -64,7 +65,7 @@ void loop() {
     requestFlightDataChunk(dataRateCounters, flightDataState);
   }
   if (padTimer.expired()) {
-    requestPadDataChunk(dataRateCounters, flightDataState);
+    requestPadDataChunk(dataRateCounters, loadingDataState);
   }
 
   computeI2CDataRates(dataRateCounters);
@@ -72,10 +73,12 @@ void loop() {
   if (dataRateTimer.expired()) {
     // printI2CDataRates(dataRateCounters);
     // printFlightData(flightDataState.currentFlightData);
+    printAirLoadingData(loadingDataState.currentAirLoadingData);
+    printWaterLoadingData(loadingDataState.currentWaterLoadingData);
   }
 
   ntpClient.update(); // Update NTP time
-  pocketbaseLoop(pocketbaseState, pocketbaseConnection);
+  // pocketbaseLoop(pocketbaseState, pocketbaseConnection);
 
   debugSendCommandToGateway();
 }

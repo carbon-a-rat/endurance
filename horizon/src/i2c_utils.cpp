@@ -105,33 +105,46 @@ size_t requestFlightDataChunk(DataRateCounters &counter,
 }
 
 // Handles a chunk of pad data received from the pad
-void handlePadDataChunk(uint8_t *chunk, int bytesRead, FlightDataState &state) {
-#ifdef DEBUG
-  Serial.print("[PAD I2C] Received ");
-  Serial.print(bytesRead);
-  Serial.println(" bytes from pad:");
-  for (int i = 0; i < bytesRead; ++i) {
-    Serial.print("0x");
-    if (chunk[i] < 16)
-      Serial.print("0");
-    Serial.print(chunk[i], HEX);
-    Serial.print(" ");
-    if ((i + 1) % 16 == 0)
-      Serial.println();
+void handlePadDataChunk(uint8_t *chunk, int bytesRead,
+                        LoadingDataState &state) {
+  if (bytesRead < sizeof(PadDataPacket)) {
+    Serial.println("Received data too short for PadDataPacket!");
+    return;
   }
-  Serial.println();
-#endif
+
+  PadDataPacket packet;
+  memcpy(&packet, chunk, sizeof(PadDataPacket));
+
+  switch (packet.type) {
+  case PadDataPacket::WATER_LOADING_DATA:
+    state.previousWaterLoadingData = state.currentWaterLoadingData;
+    state.currentWaterLoadingData = packet.data.waterLoadingData;
+    break;
+  case PadDataPacket::AIR_LOADING_DATA:
+    state.previousAirLoadingData = state.currentAirLoadingData;
+    state.currentAirLoadingData = packet.data.airLoadingData;
+    break;
+  default:
+    Serial.println("Unknown PadDataPacket type received!");
+    break;
+  }
+
+  state.hasReceivedLoadingData = true;
 }
 
 // Requests a chunk of pad data from the pad over I2C
-size_t requestPadDataChunk(DataRateCounters &counter, FlightDataState &state) {
-  uint8_t chunk[PAD_I2C_CHUNK_SIZE];
-  size_t bytesRequested = sizeof(chunk);
-  Wire.requestFrom(PAD_I2C_ADDRESS, (int)bytesRequested);
-  int bytesAvailable = Wire.available();
-  int bytesRead = Wire.readBytes((char *)chunk, bytesRequested);
-  counter.padBytesReceived += bytesRead;
-  handlePadDataChunk(chunk, bytesRead, state);
+size_t requestPadDataChunk(DataRateCounters &counter, LoadingDataState &state) {
+  uint8_t buffer[PAD_I2C_CHUNK_SIZE];
+  size_t bytesRead = Wire.requestFrom(PAD_I2C_ADDRESS, PAD_I2C_CHUNK_SIZE);
+
+  if (bytesRead > 0) {
+    Wire.readBytes((char *)buffer, bytesRead);
+    handlePadDataChunk(buffer, bytesRead, state);
+    counter.padBytesReceived += bytesRead;
+  } else {
+    Serial.println("Failed to read data from Pad over I2C.");
+  }
+
   return bytesRead;
 }
 

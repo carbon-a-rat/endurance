@@ -1,9 +1,10 @@
 #include <Arduino.h>
+#include <Timer.h>
 #include <Wire.h>
 #include <core.h>
-#include <Timer.h>
 
-#include "DFRobot_MPX5700.h"
+#include "DFRobot_MPX5700SoftWire.h"
+
 #define AIR_SENSOR_I2C_ADDRESS 0x16
 
 #define CANCEL_PIN 13
@@ -11,10 +12,12 @@
 #define CYLINDER_PIN 11
 #define WATER_VALVE_PIN 10
 
-DFRobot_MPX5700 mpx5700(&Wire, AIR_SENSOR_I2C_ADDRESS);
+SoftWire Wire1(4, 5);
 
-const float targetAirPressure = 300.0; // in kPa
-float targetWaterVolume = 0.5;         // in L
+DFRobot_MPX5700 mpx5700(&Wire1, AIR_SENSOR_I2C_ADDRESS);
+
+float targetAirPressure = 300.0; // in kPa
+float targetWaterVolume = 0.5;   // in L
 
 enum launchingStates { STAND_BY, FILLING_AIR, FILLING_WATER, READY_TO_LAUNCH };
 
@@ -29,17 +32,13 @@ volatile long pulse;
 bool waterFilled;
 bool airFilled;
 
-// Dummy data buffer for I2C response
-uint8_t i2cDummyData[PAD_I2C_CHUNK_SIZE] = {0};
-unsigned long lastDummyUpdate = 0;
-
 // Data rate counter for I2C requests
 volatile unsigned long i2cRequestCount = 0;
 unsigned long lastRatePrint = 0;
 unsigned long lastRate = 0;
 
-Timer dataUpdateTimer(200);
-Timer sensorCheckTimer(200);
+Timer dataUpdateTimer(DATA_SEND_INTERVAL);
+Timer sensorCheckTimer(DATA_SEND_INTERVAL);
 
 // Forward declarations
 void increase();
@@ -51,13 +50,42 @@ void cancelFlight();
 void updateLoadingData();
 void prepareDummyData();
 void onI2CRequest();
+void addWaterLoadingDataToQueue(const WaterLoadingData &data);
+void addAirLoadingDataToQueue(const AirLoadingData &data);
 
-void prepareDummyData() {
-  // Fill dummy data (for now, just incrementing bytes)
-  for (int i = 0; i < PAD_I2C_CHUNK_SIZE; ++i) {
-    i2cDummyData[i] = i;
+const int BUFFER_SIZE = DATA_SEND_FREQUENCY * 10; // 10 seconds of data
+
+struct CircularBuffer {
+  PadDataPacket buffer[BUFFER_SIZE];
+  int head = 0;
+  int tail = 0;
+  int count = 0;
+
+  bool isFull() { return count == BUFFER_SIZE; }
+  bool isEmpty() { return count == 0; }
+
+  bool enqueue(const PadDataPacket &packet) {
+    if (isFull()) {
+      return false; // Buffer is full
+    }
+    buffer[head] = packet;
+    head = (head + 1) % BUFFER_SIZE;
+    count++;
+    return true;
   }
-}
+
+  bool dequeue(PadDataPacket &packet) {
+    if (isEmpty()) {
+      return false; // Buffer is empty
+    }
+    packet = buffer[tail];
+    tail = (tail + 1) % BUFFER_SIZE;
+    count--;
+    return true;
+  }
+};
+
+CircularBuffer padDataQueue;
 
 void updateLoadingData() {
   long currentPulse = pulse;
@@ -68,66 +96,91 @@ void updateLoadingData() {
   airLoadingData.timestamp = millis();
 
   Serial.println(airLoadingData.pressure);
+
+  addAirLoadingDataToQueue(airLoadingData);
+  addWaterLoadingDataToQueue(waterLoadingData);
 }
 
 void onI2CRequest() {
-  return;
-  // Only send already-prepared data, do not print or compute here
-  Wire.write(i2cDummyData, PAD_I2C_CHUNK_SIZE);
-  i2cRequestCount++;
+  if (!padDataQueue.isEmpty()) {
+    PadDataPacket packet;
+    if (padDataQueue.dequeue(packet)) {
+      Wire.write((uint8_t *)&packet, sizeof(PadDataPacket));
+    }
+  } else {
+    // Send an empty packet if the queue is empty
+    PadDataPacket emptyPacket;
+    emptyPacket.type = PadDataPacket::NO_DATA;
+    Wire.write((uint8_t *)&emptyPacket, sizeof(PadDataPacket));
+  }
 }
 
-void setup() {
-  Serial.begin(115200);
+void addWaterLoadingDataToQueue(const WaterLoadingData &data) {
+  PadDataPacket packet;
+  packet.type = PadDataPacket::WATER_LOADING_DATA;
+  packet.data.waterLoadingData = data;
+  if (!padDataQueue.enqueue(packet)) {
+    Serial.println("Queue is full. Dropping water loading data.");
+  }
+}
+
+void addAirLoadingDataToQueue(const AirLoadingData &data) {
+  PadDataPacket packet;
+  packet.type = PadDataPacket::AIR_LOADING_DATA;
+  packet.data.airLoadingData = data;
+  if (!padDataQueue.enqueue(packet)) {
+    Serial.println("Queue is full. Dropping air loading data.");
+  }
+}
+
+void initializePins() {
   pinMode(AIR_DISTRIBUTOR_PIN, OUTPUT);
   pinMode(CYLINDER_PIN, OUTPUT);
   pinMode(CANCEL_PIN, OUTPUT);
   pinMode(WATER_VALVE_PIN, OUTPUT);
 
   pinMode(sensorPin, INPUT);
+}
 
-  // Set up interrupt to increment pulse each time the sensor detects water flowing,
-  // allowing to deduce the volume that passed through
-  attachInterrupt(digitalPinToInterrupt(sensorPin), increase, RISING);
+void initializeI2C() {
+  Wire.begin(PAD_I2C_ADDRESS);
+  Wire.setClock(ENDURANCE_I2C_BUS_SPEED);
+  Wire.setWireTimeout(ENDURANCE_I2C_TIMEOUT);
+  Wire.onRequest(onI2CRequest);
+  Serial.print("I2C Slave ready at address 0x");
+  Serial.println(PAD_I2C_ADDRESS, HEX);
+}
 
-  // Initialize I2C as slave
-  //Wire.begin(PAD_I2C_ADDRESS);
-  //Wire.setClock(I2C_BUS_SPEED);
-  //Wire.setWireTimeout(I2C_TIMEOUT);
-  //Wire.onRequest(onI2CRequest);
-  //Serial.print("I2C Slave ready at address 0x");
-  //Serial.println(PAD_I2C_ADDRESS, HEX);
-
-  //prepareDummyData();
-
-  while (false == mpx5700.begin()) {
-    Serial.println("i2c begin fail,please check connect!");
+void initializeMPX5700() {
+  while (!mpx5700.begin()) {
+    Serial.println("MPX5700 begin fail, please check connect!");
     delay(1000);
   }
   Serial.println("i2c begin success");
-
   mpx5700.setMeanSampleSize(5);
-  
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  initializePins();
+  attachInterrupt(digitalPinToInterrupt(sensorPin), increase, RISING);
+
+  initializeI2C();
+  initializeMPX5700();
+
   Serial.println("Setup done. Filling air in 5 sec");
   delay(5000);
   fillAir();
-  
 }
 
 void loop() {
-  // Update loading data every 200 ms
-  if (dataUpdateTimer.expired()) {
-    updateLoadingData();
-  }
 
-  // Update dummy data periodically if needed (example: every 100ms)
-  if (millis() - lastDummyUpdate > 100) {
-    prepareDummyData();
-    lastDummyUpdate = millis();
-  }
+  static Timer dataRateTimer(1000);
+  // Update loading data every 200 ms
 
   // Print I2C data rate every second
-  if (millis() - lastRatePrint > 1000) {
+  if (dataRateTimer.expired()) {
     lastRate = i2cRequestCount;
     i2cRequestCount = 0;
     lastRatePrint = millis();
@@ -140,8 +193,9 @@ void loop() {
   }
 
   if (sensorCheckTimer.expired()) {
+    updateLoadingData();
     if (launchingState == FILLING_AIR) {
-    // Checks pressure sensor
+      // Checks pressure sensor
 
       float currentAirPressure = mpx5700.getPressureValue_kpa(1);
       if (currentAirPressure >= targetAirPressure) {

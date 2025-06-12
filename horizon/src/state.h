@@ -14,6 +14,15 @@ struct FlightDataState {
   bool hasReceivedFlightData = false;
 };
 
+struct LoadingDataState {
+  WaterLoadingData currentWaterLoadingData = {0};
+  WaterLoadingData previousWaterLoadingData = {0};
+  AirLoadingData currentAirLoadingData = {0};
+  AirLoadingData previousAirLoadingData = {0};
+  bool hasReceivedLoadingData = false;
+}; // This struct is simpler than FlightDataState because it doesn't need to
+   // handle byte offsets or partial data.
+
 struct PocketbaseState {
   bool isConnected = false;
   DynamicJsonDocument launcherRecord =
