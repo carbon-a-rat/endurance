@@ -53,6 +53,65 @@ void debugSendCommandToPad() {
   }
 }
 
+void launchControlCallback(PocketbaseState &pocketbaseState) {
+  Serial.println("Launch control callback triggered.");
+  if (loadingDataState.launchState == STAND_BY &&
+      pocketbaseState.launchRecord["record"]["should_load"].as<bool>()) {
+    float waterVolumicPercentage =
+        pocketbaseState.launchRecord["record"]["water_volumic_percentage"]
+            .as<float>();
+    Serial.print("Water volumic percentage: ");
+    Serial.println(waterVolumicPercentage);
+    float rocketVolume;
+    String serializedRocketRecord =
+        pocketbaseConnection.collection("rockets").getOne(
+            pocketbaseState.launchRecord["record"]["rocket"]
+                .as<String>()
+                .c_str(),
+            nullptr, "volume");
+    DynamicJsonDocument rocketDoc(1024);
+    DeserializationError error =
+        deserializeJson(rocketDoc, serializedRocketRecord);
+    if (!error) {
+      pocketbaseState.rocketRecord = rocketDoc;
+      rocketVolume = pocketbaseState.rocketRecord["volume"].as<float>();
+      Serial.println(pocketbaseState.rocketRecord.as<String>());
+      Serial.print("Rocket volume: ");
+      Serial.println(rocketVolume);
+    } else {
+      Serial.println("Failed to deserialize rocket record JSON");
+      rocketVolume = 0.0;
+    }
+    String command =
+        "fill_water" + String(waterVolumicPercentage * rocketVolume, 2);
+    sendCommandToPad(command);
+    Serial.println("Water loading command sent: " + command);
+  } else if (loadingDataState.launchState == FILLED_WATER &&
+             pocketbaseState.launchRecord["record"]["should_load"].as<bool>()) {
+    float airPressure =
+        pocketbaseState.launchRecord["record"]["pressure"].as<float>();
+    String command = "fill_air" + String(airPressure, 2);
+    sendCommandToPad(command);
+    Serial.println("Air loading command sent: " + command);
+  } else if (loadingDataState.launchState == READY_TO_LAUNCH &&
+             pocketbaseState.launchRecord["record"]["should_launch"]
+                 .as<bool>()) {
+    String command = "launch";
+    sendCommandToPad(command);
+    sendCommandToGateway("GO");
+    Serial.println("Launch command sent");
+  } else if (loadingDataState.launchState != STAND_BY &&
+             pocketbaseState.launchRecord["record"]["should_cancel"]
+                 .as<bool>()) {
+    String command = "cancel";
+    sendCommandToPad(command);
+    sendCommandToGateway("RESET");
+    Serial.println("Launch cancel command sent");
+  } else {
+    Serial.println("No action needed for launch control.");
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   initI2C();
@@ -60,7 +119,8 @@ void setup() {
            []() {},                     // connectedCallback
            []() { initNtp(ntpClient); } // gotIPCallback
   );
-  // initPocketbase(pocketbaseConnection, pocketbaseState);
+  pocketbaseState.launchControlCallback = launchControlCallback;
+  initPocketbase(pocketbaseConnection, pocketbaseState);
   Serial.println("Horizon ready");
 }
 
@@ -75,20 +135,50 @@ void loop() {
     requestFlightDataChunk(dataRateCounters, flightDataState);
   }
   if (padTimer.expired()) {
-    // requestPadDataChunk(dataRateCounters, loadingDataState);
+    requestPadDataChunk(dataRateCounters, loadingDataState);
   }
 
   computeI2CDataRates(dataRateCounters);
 
   if (dataRateTimer.expired()) {
-    // printI2CDataRates(dataRateCounters);
-    printFlightData(flightDataState.currentFlightData);
-    // printAirLoadingData(loadingDataState.currentAirLoadingData);
-    // printWaterLoadingData(loadingDataState.currentWaterLoadingData);
+    printI2CDataRates(dataRateCounters);
+    // printFlightData(flightDataState.currentFlightData);
+    printAirLoadingData(loadingDataState.currentAirLoadingData);
+    printWaterLoadingData(loadingDataState.currentWaterLoadingData);
+    String launchState;
+    switch (loadingDataState.launchState) // Print launch state
+    {
+    case STAND_BY:
+      launchState = "Standby";
+      break;
+    case FILLING_WATER:
+      launchState = "Filling Water";
+      break;
+    case FILLED_WATER:
+      launchState = "Filled Water";
+      break;
+    case FILLING_AIR:
+      launchState = "Filling Air";
+      break;
+    case READY_TO_LAUNCH:
+      launchState = "Ready to Launch";
+      break;
+    case LAUNCHED:
+      launchState = "Launched";
+      break;
+    case CANCELLED:
+      launchState = "Cancelled";
+      break;
+    default:
+      launchState = "Invalid State: " + String(loadingDataState.launchState);
+      break;
+    }
+    Serial.print("Launch State: ");
+    Serial.println(launchState);
   }
 
   ntpClient.update(); // Update NTP time
-  // pocketbaseLoop(pocketbaseState, pocketbaseConnection);
+  pocketbaseLoop(pocketbaseState, pocketbaseConnection, ntpClient);
 
   // debugSendCommandToGateway();
   debugSendCommandToPad();

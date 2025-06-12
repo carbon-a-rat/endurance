@@ -41,7 +41,16 @@ struct OutgoingQueue {
   uint16_t currentPacketIndex;
 };
 
-#define OUTGOING_QUEUE_MAX_SIZE 16
+#ifdef GATEWAY_DEBUG
+bool debugIsFlying = false;
+bool debugIsDeployed = false;
+bool debugIsLanded = false;
+unsigned long debugFlightStartTime = 0;
+unsigned long debugDeploymentTime = 0;
+unsigned long debugLandingTime = 0;
+#endif
+
+int OUTGOING_QUEUE_MAX_SIZE = 16;
 
 OutgoingQueue outgoingQueue = {NULL, NULL, 0, OUTGOING_QUEUE_MAX_SIZE, 0};
 
@@ -229,6 +238,20 @@ void onI2CReceive(int numBytes) {
       enqueueOutgoingPacket(packet, numBytes);
       Serial.print("Enqueued packet for probe via ESP-NOW, size: ");
       Serial.println(numBytes);
+#ifdef GATEWAY_DEBUG
+      String command = String((char *)packet);
+      Serial.print("Received I2C command: ");
+      Serial.println(command);
+      if (command == "GO") {
+        debugIsFlying = true;
+        debugFlightStartTime = millis();
+
+      } else if (command == "RESET") {
+        debugIsFlying = false;
+        debugIsDeployed = false;
+        debugIsLanded = false;
+      }
+#endif
     } else {
       Serial.println("Failed to allocate memory for outgoing packet.");
       // Drain the buffer
@@ -264,13 +287,13 @@ void initI2CSlave() {
   Wire.end(); // In case already initialized
   delay(10);
   Wire.begin(GATEWAY_I2C_ADDRESS, 21, 22,
-             I2C_BUS_SPEED); // Use defined bus speed and pins
-  Wire.setTimeOut(I2C_TIMEOUT);
+             ENDURANCE_I2C_BUS_SPEED); // Use defined bus speed and pins
+  Wire.setTimeOut(ENDURANCE_I2C_TIMEOUT);
   Wire.onRequest(onI2CRequest);
   Wire.onReceive(onI2CReceive);
   lastI2CActivity = millis();
   Serial.print("I2C slave initialized at ");
-  Serial.print(I2C_BUS_SPEED);
+  Serial.print(ENDURANCE_I2C_BUS_SPEED);
   Serial.println(" Hz.");
 }
 
@@ -320,10 +343,17 @@ void debugSerialToEspNow() {
     }
   }
 }
-
+#ifdef GATEWAY_DEBUG
 void debugAddSampleDataToQueue() {
   // Create a sample FlightData packet
   FlightData sampleData;
+  sampleData.timestamp = millis() - debugFlightStartTime; // Use elapsed time
+  sampleData.pressure =
+      1013.25 + sin(millis() / 1000.0) * 10; // Example pressure in hPa
+  sampleData.temperature =
+      25.0 + sin(millis() / 1000.0) * 5; // Example temperature in Celsius
+  sampleData.altitude =
+      0 + sin(millis() / 1000.0) * 100; // Example altitude in meters
   sampleData.ax = 1000;
   sampleData.ay = 2000;
   sampleData.az = 3000;
@@ -331,25 +361,28 @@ void debugAddSampleDataToQueue() {
   sampleData.gy = 5000;
   sampleData.gz = 6000;
   sampleData.batteryLevel = 75; // Example battery level
-  sampleData.isFlying = true;
-  sampleData.isDeployed = false;
-  sampleData.isLanded = false;
+  sampleData.isFlying = debugIsFlying;
+  sampleData.isDeployed = debugIsDeployed;
+  sampleData.isLanded = debugIsLanded;
 
   // Allocate memory for the packet
   uint8_t *packet = (uint8_t *)malloc(sizeof(FlightData));
   if (packet) {
     memcpy(packet, &sampleData, sizeof(FlightData));
     enqueueGatewayPacket(packet, sizeof(FlightData));
-    Serial.println("Sample data added to gateway queue.");
+    // Serial.println("Sample data added to gateway queue.");
   } else {
     Serial.println("Failed to allocate memory for sample data packet.");
   }
 }
+#endif // GATEWAY_DEBUG
 
 void loop() {
   static Timer sendTimer(DATA_SEND_INTERVAL); // Data send frequency
+#ifdef GATEWAY_DEBUG
   static Timer debugSampleData(
       DATA_SEND_INTERVAL); // Debug sample data frequency
+#endif
 
   debugSerialToEspNow();
   // Data send logic
@@ -370,11 +403,30 @@ void loop() {
       }
     }
   }
-
+#ifdef GATEWAY_DEBUG
   if (debugSampleData.expired()) {
-    // debugAddSampleDataToQueue();
+    debugAddSampleDataToQueue();
   }
 
+  if (debugIsFlying && !debugIsDeployed &&
+      millis() - debugFlightStartTime >= 2000) { // Simulate deployment
+    debugIsDeployed = true;
+    debugDeploymentTime = millis();
+    Serial.println("Debug: Deployment simulated.");
+  } else if (debugIsDeployed && !debugIsLanded &&
+             millis() - debugDeploymentTime >= 5000) {
+    debugIsLanded = true;
+    debugIsFlying = false; // Simulate landing
+    debugLandingTime = millis();
+    Serial.println("Debug: Landing simulated.");
+  } else if (debugIsLanded && millis() - debugLandingTime >= 5000) {
+    debugIsFlying = false;
+    debugIsDeployed = false;
+    debugIsLanded = false; // Reset state
+    Serial.println("Debug: Resetting state after landing.");
+  }
+
+#endif
   // I2C watchdog: re-init if no activity for 5 seconds
   if (millis() - lastI2CActivity > 5000) {
     Serial.println("I2C inactivity detected, re-initializing I2C slave...");

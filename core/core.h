@@ -1,5 +1,11 @@
 // Public constants and structures for the whole endurance project
 #pragma once
+
+#define ENDURANCE_CORE_H
+
+#define GATEWAY_DEBUG
+#define PAD_DEBUG
+
 const int DATA_SEND_FREQUENCY = 32; // 32 Hz
 const long unsigned DATA_SEND_INTERVAL = 1000 / DATA_SEND_FREQUENCY;
 

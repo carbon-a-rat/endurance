@@ -80,21 +80,25 @@ size_t requestFlightDataChunk(DataRateCounters &counter,
   size_t bytesRequested = sizeof(chunk);
   Wire.requestFrom(GATEWAY_I2C_ADDRESS, (int)bytesRequested);
   int bytesRead = Wire.readBytes((char *)chunk, bytesRequested);
-#ifdef DEBUG
+
+  // Debug: Log raw bytes received
+  /*Serial.print("Raw I2C Data Received: ");
   for (int i = 0; i < bytesRead; ++i) {
     Serial.print(chunk[i], HEX);
     Serial.print(" ");
   }
   Serial.println();
-#endif
-  bool allZero = true, allFF = true;
+   */
+  // bool allZero = true, allFF = true;
+  bool allFF = true;
   for (int i = 0; i < bytesRead; ++i) {
-    if (chunk[i] != 0)
-      allZero = false;
+    // if (chunk[i] != 0)
+    //   allZero = false;
     if (chunk[i] != 0xFF)
       allFF = false;
   }
-  if (allZero || allFF) {
+  // if (allZero || allFF) {
+  if (allFF) {
     handleFlightDataChunk(chunk, 0, state); // No data available
     counter.gatewayBytesReceived += 1;
     return 0;
@@ -114,6 +118,13 @@ void handlePadDataChunk(uint8_t *chunk, int bytesRead,
 
   PadDataPacket packet;
   memcpy(&packet, chunk, sizeof(PadDataPacket));
+
+  // Validate the launchState field
+  if (packet.launchState < STAND_BY || packet.launchState > CANCELLED) {
+    Serial.print("Invalid launchState received: ");
+    Serial.println(packet.launchState);
+    return; // Ignore invalid packets
+  }
   state.launchState = packet.launchState;
 
   switch (packet.type) {
@@ -125,8 +136,11 @@ void handlePadDataChunk(uint8_t *chunk, int bytesRead,
     state.previousAirLoadingData = state.currentAirLoadingData;
     state.currentAirLoadingData = packet.data.airLoadingData;
     break;
+  case PadDataPacket::NO_DATA:
+    break;
   default:
-    Serial.println("Unknown PadDataPacket type received!");
+    Serial.print("Unknown PadDataPacket type received! Type: ");
+    Serial.println(packet.type);
     break;
   }
 
@@ -136,15 +150,22 @@ void handlePadDataChunk(uint8_t *chunk, int bytesRead,
 // Requests a chunk of pad data from the pad over I2C
 size_t requestPadDataChunk(DataRateCounters &counter, LoadingDataState &state) {
   uint8_t buffer[PAD_I2C_CHUNK_SIZE];
+
+  // Clear I2C buffer before reading
+  while (Wire.available()) {
+    Wire.read();
+  }
+
   size_t bytesRead = Wire.requestFrom(PAD_I2C_ADDRESS, PAD_I2C_CHUNK_SIZE);
 
-  if (bytesRead > 0) {
-    Wire.readBytes((char *)buffer, bytesRead);
-    handlePadDataChunk(buffer, bytesRead, state);
-    counter.padBytesReceived += bytesRead;
-  } else {
+  if (bytesRead == 0) {
     Serial.println("Failed to read data from Pad over I2C.");
+    return 0;
   }
+
+  Wire.readBytes((char *)buffer, bytesRead);
+  handlePadDataChunk(buffer, bytesRead, state);
+  counter.padBytesReceived += bytesRead;
 
   return bytesRead;
 }
@@ -163,5 +184,9 @@ void sendCommandToPad(const String &command) {
   Serial.println(command);
   Wire.beginTransmission(PAD_I2C_ADDRESS);
   Wire.write((const uint8_t *)command.c_str(), command.length());
-  Wire.endTransmission();
+  int status = Wire.endTransmission();
+  if (status != 0) {
+    Serial.print("I2C transmission error: ");
+    Serial.println(status);
+  }
 }

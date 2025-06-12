@@ -1,6 +1,7 @@
 #pragma once
 #include "core.h"
 #include <ArduinoJson.h>
+#include <functional>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -30,4 +31,7 @@ struct PocketbaseState {
       DynamicJsonDocument(1024); // Adjust size as needed
   DynamicJsonDocument launchRecord =
       DynamicJsonDocument(1024); // Adjust size as needed
+  DynamicJsonDocument rocketRecord =
+      DynamicJsonDocument(1024); // Adjust size as needed
+  std::function<void(PocketbaseState &)> launchControlCallback;
 };
