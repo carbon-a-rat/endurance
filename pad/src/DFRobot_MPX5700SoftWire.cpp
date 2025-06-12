@@ -31,7 +31,6 @@ void DFRobot_MPX5700::setMeanSampleSize(uint8_t size) {
 
 float DFRobot_MPX5700::getPressureValue_kpa(uint8_t ifcalibration) {
   uint8_t buf[2];
-  float voltage, Pressure;
   writeReg(0x09, &ifcalibration, 1);
   delay(100);
   readReg(0x06, buf, 2);

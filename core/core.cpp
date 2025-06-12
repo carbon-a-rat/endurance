@@ -44,8 +44,7 @@ void printWaterLoadingData(const WaterLoadingData &data) {
   Serial.print(data.waterFlowRate);
   Serial.print(" L/s, Error: ");
   Serial.print(data.error);
-  Serial.print(" L, Is Loading: ");
-  Serial.println(data.isLoading ? "Yes" : "No");
+  Serial.println(" L");
 }
 void printAirLoadingData(const AirLoadingData &data) {
   Serial.print("Timestamp: ");
@@ -54,6 +53,5 @@ void printAirLoadingData(const AirLoadingData &data) {
   Serial.print(data.pressure);
   Serial.print(" kPa, Error: ");
   Serial.print(data.error);
-  Serial.print(" kPa, Is Loading: ");
-  Serial.println(data.isLoading ? "Yes" : "No");
+  Serial.println(" kPa");
 }

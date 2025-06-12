@@ -19,9 +19,7 @@ DFRobot_MPX5700 mpx5700(&Wire1, AIR_SENSOR_I2C_ADDRESS);
 float targetAirPressure = 300.0; // in kPa
 float targetWaterVolume = 0.5;   // in L
 
-enum launchingStates { STAND_BY, FILLING_AIR, FILLING_WATER, READY_TO_LAUNCH };
-
-enum launchingStates launchingState = STAND_BY;
+enum launchStates launchState = STAND_BY;
 
 WaterLoadingData waterLoadingData;
 AirLoadingData airLoadingData;
@@ -29,16 +27,13 @@ AirLoadingData airLoadingData;
 int sensorPin = 2;
 volatile long pulse;
 
-bool waterFilled;
-bool airFilled;
+unsigned long launchTimestamp = 0; // Timestamp of the last launch
+unsigned long cancelTimestamp = 0; // Timestamp of the last cancel
 
 // Data rate counter for I2C requests
 volatile unsigned long i2cRequestCount = 0;
 unsigned long lastRatePrint = 0;
 unsigned long lastRate = 0;
-
-Timer dataUpdateTimer(DATA_SEND_INTERVAL);
-Timer sensorCheckTimer(DATA_SEND_INTERVAL);
 
 // Forward declarations
 void increase();
@@ -52,9 +47,11 @@ void prepareDummyData();
 void onI2CRequest();
 void addWaterLoadingDataToQueue(const WaterLoadingData &data);
 void addAirLoadingDataToQueue(const AirLoadingData &data);
+void onI2CReceive(int numBytes);
+void resetAfterLaunch();
+void endCancelFlight();
 
-const int BUFFER_SIZE = DATA_SEND_FREQUENCY * 10; // 10 seconds of data
-
+const int BUFFER_SIZE = PAD_DATA_SEND_FREQUENCY * 4; // 4 seconds of data
 struct CircularBuffer {
   PadDataPacket buffer[BUFFER_SIZE];
   int head = 0;
@@ -90,15 +87,17 @@ CircularBuffer padDataQueue;
 void updateLoadingData() {
   long currentPulse = pulse;
   waterLoadingData.waterVolume = currentPulse / 660.0;
+  waterLoadingData.error = waterLoadingData.waterVolume - targetWaterVolume;
+  waterLoadingData.waterFlowRate = waterLoadingData.waterVolume /
+                                   (millis() - waterLoadingData.timestamp) *
+                                   1000.0;
   waterLoadingData.timestamp = millis();
 
   airLoadingData.pressure = mpx5700.getPressureValue_kpa(1);
+  airLoadingData.error = airLoadingData.pressure - targetAirPressure;
   airLoadingData.timestamp = millis();
 
   Serial.println(airLoadingData.pressure);
-
-  addAirLoadingDataToQueue(airLoadingData);
-  addWaterLoadingDataToQueue(waterLoadingData);
 }
 
 void onI2CRequest() {
@@ -111,12 +110,14 @@ void onI2CRequest() {
     // Send an empty packet if the queue is empty
     PadDataPacket emptyPacket;
     emptyPacket.type = PadDataPacket::NO_DATA;
+    emptyPacket.launchState = launchState;
     Wire.write((uint8_t *)&emptyPacket, sizeof(PadDataPacket));
   }
 }
 
 void addWaterLoadingDataToQueue(const WaterLoadingData &data) {
   PadDataPacket packet;
+  packet.launchState = launchState;
   packet.type = PadDataPacket::WATER_LOADING_DATA;
   packet.data.waterLoadingData = data;
   if (!padDataQueue.enqueue(packet)) {
@@ -126,10 +127,21 @@ void addWaterLoadingDataToQueue(const WaterLoadingData &data) {
 
 void addAirLoadingDataToQueue(const AirLoadingData &data) {
   PadDataPacket packet;
+  packet.launchState = launchState;
   packet.type = PadDataPacket::AIR_LOADING_DATA;
   packet.data.airLoadingData = data;
   if (!padDataQueue.enqueue(packet)) {
     Serial.println("Queue is full. Dropping air loading data.");
+  }
+}
+
+void sendLoadingData() {
+  if (launchState == FILLING_WATER || launchState == FILLED_WATER) {
+    // Add water loading data to the queue
+    addWaterLoadingDataToQueue(waterLoadingData);
+  } else if (launchState == FILLING_AIR || launchState == READY_TO_LAUNCH) {
+    // Add air loading data to the queue
+    addAirLoadingDataToQueue(airLoadingData);
   }
 }
 
@@ -147,6 +159,7 @@ void initializeI2C() {
   Wire.setClock(ENDURANCE_I2C_BUS_SPEED);
   Wire.setWireTimeout(ENDURANCE_I2C_TIMEOUT);
   Wire.onRequest(onI2CRequest);
+  Wire.onReceive(onI2CReceive);
   Serial.print("I2C Slave ready at address 0x");
   Serial.println(PAD_I2C_ADDRESS, HEX);
 }
@@ -177,7 +190,9 @@ void setup() {
 void loop() {
 
   static Timer dataRateTimer(1000);
-  // Update loading data every 200 ms
+  static Timer sensorCheckTimer(
+      DATA_SEND_INTERVAL); // Timer for checking sensors
+  static Timer dataSendTimer(PAD_DATA_SEND_INTERVAL); // Timer for sending data
 
   // Print I2C data rate every second
   if (dataRateTimer.expired()) {
@@ -194,72 +209,92 @@ void loop() {
 
   if (sensorCheckTimer.expired()) {
     updateLoadingData();
-    if (launchingState == FILLING_AIR) {
+    if (launchState == FILLING_AIR) {
       // Checks pressure sensor
 
-      float currentAirPressure = mpx5700.getPressureValue_kpa(1);
+      float currentAirPressure = airLoadingData.pressure;
       if (currentAirPressure >= targetAirPressure) {
         // Target air pressure reached. Now closing valve.
-
+        launchState = READY_TO_LAUNCH;
         stopAirFlow();
       }
     }
 
-    if (launchingState == FILLING_WATER) {
+    if (launchState == FILLING_WATER) {
       // Checks water flow sensor
 
-      long currentPulse = pulse;
-      float currentWaterVolume = currentPulse / 660.0;
+      float currentWaterVolume = waterLoadingData.waterVolume;
 
       if (currentWaterVolume >= targetWaterVolume) {
         // Target water volume. Now closing valve.
-
+        launchState = FILLED_WATER;
         stopWaterFlow();
       }
     }
   }
+
+  if (launchState == LAUNCHING && millis() - launchTimestamp >= 1000) {
+    // Wait for 1 second after launch to reset
+    resetAfterLaunch();
+  }
+
+  if (launchState == CANCELLING && millis() - cancelTimestamp >= 1000) {
+    // Wait for 1 second after cancel to end the procedure
+    endCancelFlight();
+  }
+
+  if (dataSendTimer.expired()) {
+    sendLoadingData();
+  }
 }
 
 void launchFlight() {
-  if (launchingState == READY_TO_LAUNCH) {
+  if (launchState == READY_TO_LAUNCH) {
     Serial.println("Launching.");
     // Launch the rocket
     digitalWrite(CYLINDER_PIN, HIGH);
-    delay(2000);
-    digitalWrite(CYLINDER_PIN, LOW);
-
-    waterFilled = false;
-    airFilled = false;
-    launchingState = STAND_BY;
+    launchState = LAUNCHING;
+    launchTimestamp = millis(); // Record the launch time
   } else {
     Serial.println("WARNING: Launch not ready yet.");
   }
 }
 
+void resetAfterLaunch() {
+  if (launchState == LAUNCHING) {
+    digitalWrite(CYLINDER_PIN, LOW);
+
+    launchState = STAND_BY;
+  }
+}
+
 void cancelFlight() {
   Serial.println("Cancelling flight...");
+  launchState = CANCELLING;
+  cancelTimestamp = millis(); // Record the cancel time
 
   stopWaterFlow();
   stopAirFlow();
 
   // Cancels the flight by releasing the air / water contained in the rocket
   digitalWrite(CANCEL_PIN, HIGH);
+}
 
+void endCancelFlight() {
+  // Ends the cancel flight procedure.
+  digitalWrite(CANCEL_PIN, LOW);
   Serial.println("Flight cancelled.");
+  launchState = CANCELLED;
 }
 
 void fillAir() {
   // Starts to fill the rocket with air.
 
   // Doesn't close the cancel_pin as it should already be closed.
-  if (airFilled == true) {
-    Serial.println("WARNING: Air has already been filled !");
-    return;
-  }
-  /*if (waterFilled == false) {
+  if (launchState != FILLED_WATER) {
     Serial.println("WARNING: Water hasn't been filled yet !");
     return;
-  }*/
+  }
 
   // Closes the circuit.
   digitalWrite(CANCEL_PIN, LOW);
@@ -267,15 +302,13 @@ void fillAir() {
   digitalWrite(AIR_DISTRIBUTOR_PIN, HIGH);
   Serial.println("Starting to fill air...");
 
-  launchingState = FILLING_AIR;
-
-  airLoadingData.isLoading = true;
+  launchState = FILLING_AIR;
 }
 
 void fillWater() {
   // Starts to fill the rocket with water.
 
-  if (waterFilled == true) {
+  if (launchState == FILLED_WATER) {
     Serial.println("WARNING: Water has already been filled !");
   }
 
@@ -288,9 +321,7 @@ void fillWater() {
   digitalWrite(WATER_VALVE_PIN, HIGH);
   Serial.println("Starting to fill water...");
 
-  launchingState = FILLING_WATER;
-
-  waterLoadingData.isLoading = true;
+  launchState = FILLING_WATER;
 }
 
 void stopWaterFlow() {
@@ -298,10 +329,6 @@ void stopWaterFlow() {
   digitalWrite(WATER_VALVE_PIN, LOW);
 
   Serial.println("Water valve closed");
-
-  launchingState = STAND_BY;
-
-  waterLoadingData.isLoading = false;
 }
 
 void stopAirFlow() {
@@ -309,10 +336,56 @@ void stopAirFlow() {
   digitalWrite(AIR_DISTRIBUTOR_PIN, LOW);
 
   Serial.println("Air valve closed");
-
-  launchingState = STAND_BY;
-
-  airLoadingData.isLoading = false;
 }
 
 void increase() { pulse++; }
+
+void onI2CReceive(int numBytes) {
+  if (numBytes < 1) {
+    Serial.println("Received empty data");
+    return;
+  }
+  char tempBuf[64];
+  size_t copyLen =
+      (numBytes < (int)(sizeof(tempBuf) - 1)) ? numBytes : (sizeof(tempBuf) - 1);
+  Wire.readBytes(tempBuf, copyLen);
+  tempBuf[copyLen] = '\0';
+  String command(tempBuf);
+  command.trim();
+
+  if (command == "launch") {
+    if (launchState == READY_TO_LAUNCH) {
+      launchFlight();
+    } else {
+      Serial.println("Cannot launch: not ready.");
+    }
+  } else if (command == "cancel") {
+    if (launchState != STAND_BY) {
+      cancelFlight();
+    } else {
+      Serial.println("Cannot cancel: no flight in progress.");
+    }
+  } else if (command.startsWith("fill_air")) {
+    if (launchState == FILLED_WATER) {
+      targetAirPressure = command.substring(9).toFloat();
+      fillAir();
+    } else {
+      Serial.println("Cannot fill air: water not filled yet.");
+    }
+  } else if (command.startsWith("fill_water")) {
+    if (launchState == STAND_BY) {
+      targetWaterVolume = command.substring(11).toFloat();
+      fillWater();
+    } else {
+      Serial.println("Cannot fill water: already in progress.");
+    }
+  } else if (command == "send_data") {
+    // This command is used to send the current loading data
+    addAirLoadingDataToQueue(airLoadingData);
+    addWaterLoadingDataToQueue(waterLoadingData);
+    Serial.println("Loading data sent.");
+  } else {
+    Serial.print("Unknown command: ");
+    Serial.println(command);
+  }
+}

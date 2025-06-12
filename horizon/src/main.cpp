@@ -43,6 +43,16 @@ void debugSendCommandToGateway() {
   }
 }
 
+void debugSendCommandToPad() {
+  if (Serial.available()) {
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+    if (command.length() > 0) {
+      sendCommandToPad(command);
+    }
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   initI2C();
@@ -65,20 +75,21 @@ void loop() {
     requestFlightDataChunk(dataRateCounters, flightDataState);
   }
   if (padTimer.expired()) {
-    requestPadDataChunk(dataRateCounters, loadingDataState);
+    // requestPadDataChunk(dataRateCounters, loadingDataState);
   }
 
   computeI2CDataRates(dataRateCounters);
 
   if (dataRateTimer.expired()) {
     // printI2CDataRates(dataRateCounters);
-    // printFlightData(flightDataState.currentFlightData);
-    printAirLoadingData(loadingDataState.currentAirLoadingData);
-    printWaterLoadingData(loadingDataState.currentWaterLoadingData);
+    printFlightData(flightDataState.currentFlightData);
+    // printAirLoadingData(loadingDataState.currentAirLoadingData);
+    // printWaterLoadingData(loadingDataState.currentWaterLoadingData);
   }
 
   ntpClient.update(); // Update NTP time
   // pocketbaseLoop(pocketbaseState, pocketbaseConnection);
 
-  debugSendCommandToGateway();
+  // debugSendCommandToGateway();
+  debugSendCommandToPad();
 }

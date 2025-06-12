@@ -16,3 +16,4 @@ void handleFlightDataChunk(uint8_t *chunk, int bytesRead,
 size_t requestPadDataChunk(DataRateCounters &counter, LoadingDataState &state);
 void handlePadDataChunk(uint8_t *chunk, int bytesRead, LoadingDataState &state);
 void sendCommandToGateway(const String &command);
+void sendCommandToPad(const String &command);

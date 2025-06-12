@@ -3,13 +3,16 @@
 const int DATA_SEND_FREQUENCY = 32; // 32 Hz
 const long unsigned DATA_SEND_INTERVAL = 1000 / DATA_SEND_FREQUENCY;
 
+const int PAD_DATA_SEND_FREQUENCY = 8; // 8 Hz
+const long unsigned PAD_DATA_SEND_INTERVAL = 1000 / PAD_DATA_SEND_FREQUENCY;
+
 const int LED_BLINK_FREQUENCY = 4; // 4 Hz
 const long unsigned LED_BLINK_DELAY = 1000 / LED_BLINK_FREQUENCY;
 
 // I2C addresses for gateway and pad
-const int ENDURANCE_I2C_BUS_SPEED = 400000; // 400 kHz fast mode
-const int ENDURANCE_I2C_BUS_SPEED_WORKAROUND =
-    1000000; // 1 MHz workaround for ESP32
+const long ENDURANCE_I2C_BUS_SPEED = 400000L; // 400 kHz fast mode
+const long ENDURANCE_I2C_BUS_SPEED_WORKAROUND =
+    1000000L; // 1 MHz workaround for ESP32
 const int ENDURANCE_I2C_TIMEOUT = 25;
 
 const int GATEWAY_I2C_CHUNK_SIZE = 64; // bytes per I2C transfer
@@ -48,7 +51,6 @@ struct WaterLoadingData {
   float waterVolume;
   float waterFlowRate;
   float error;
-  bool isLoading;
 };
 #pragma pack(pop)
 
@@ -57,13 +59,25 @@ struct AirLoadingData {
   long unsigned timestamp;
   float pressure;
   float error;
-  bool isLoading;
 };
 #pragma pack(pop)
+
+enum launchStates {
+  STAND_BY,
+  FILLING_WATER,
+  FILLED_WATER,
+  FILLING_AIR,
+  READY_TO_LAUNCH,
+  LAUNCHING,
+  LAUNCHED,
+  CANCELLING,
+  CANCELLED,
+};
 
 #pragma pack(push, 1)
 struct PadDataPacket {
   enum { NO_DATA, WATER_LOADING_DATA, AIR_LOADING_DATA } type;
+  launchStates launchState;
   union {
     WaterLoadingData waterLoadingData;
     AirLoadingData airLoadingData;

@@ -19,6 +19,7 @@ struct LoadingDataState {
   WaterLoadingData previousWaterLoadingData = {0};
   AirLoadingData currentAirLoadingData = {0};
   AirLoadingData previousAirLoadingData = {0};
+  launchStates launchState = STAND_BY;
   bool hasReceivedLoadingData = false;
 }; // This struct is simpler than FlightDataState because it doesn't need to
    // handle byte offsets or partial data.

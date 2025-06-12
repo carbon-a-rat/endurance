@@ -114,6 +114,7 @@ void handlePadDataChunk(uint8_t *chunk, int bytesRead,
 
   PadDataPacket packet;
   memcpy(&packet, chunk, sizeof(PadDataPacket));
+  state.launchState = packet.launchState;
 
   switch (packet.type) {
   case PadDataPacket::WATER_LOADING_DATA:
@@ -153,6 +154,14 @@ void sendCommandToGateway(const String &command) {
   Serial.print("Sending command to gateway: ");
   Serial.println(command);
   Wire.beginTransmission(GATEWAY_I2C_ADDRESS);
+  Wire.write((const uint8_t *)command.c_str(), command.length());
+  Wire.endTransmission();
+}
+
+void sendCommandToPad(const String &command) {
+  Serial.print("Sending command to pad: ");
+  Serial.println(command);
+  Wire.beginTransmission(PAD_I2C_ADDRESS);
   Wire.write((const uint8_t *)command.c_str(), command.length());
   Wire.endTransmission();
 }
