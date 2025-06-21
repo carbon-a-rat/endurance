@@ -41,6 +41,7 @@ void initPocketbase(PocketbaseArduino &pocketbaseConnection,
   }
 }
 // This function handles updates from the Pocketbase launcher subscription
+/*
 void onLauncherUpdate(SubscriptionEvent &ev, void *ctx) {
   PocketbaseState &pocketbaseState = *static_cast<PocketbaseState *>(ctx);
   // Handle the launcher update event
@@ -65,6 +66,7 @@ void onLauncherUpdate(SubscriptionEvent &ev, void *ctx) {
     Serial.println(action);
   }
 }
+  */
 
 void onLaunchUpdate(SubscriptionEvent &ev, void *ctx) {
   PocketbaseState &pocketbaseState = *static_cast<PocketbaseState *>(ctx);

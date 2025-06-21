@@ -83,14 +83,14 @@ void launchControlCallback(PocketbaseState &pocketbaseState) {
       rocketVolume = 0.0;
     }
     String command =
-        "fill_water" + String(waterVolumicPercentage * rocketVolume, 2);
+        "fill_water " + String(waterVolumicPercentage * rocketVolume, 2);
     sendCommandToPad(command);
     Serial.println("Water loading command sent: " + command);
   } else if (loadingDataState.launchState == FILLED_WATER &&
              pocketbaseState.launchRecord["record"]["should_load"].as<bool>()) {
     float airPressure =
         pocketbaseState.launchRecord["record"]["pressure"].as<float>();
-    String command = "fill_air" + String(airPressure, 2);
+    String command = "fill_air " + String(airPressure, 2);
     sendCommandToPad(command);
     Serial.println("Air loading command sent: " + command);
   } else if (loadingDataState.launchState == READY_TO_LAUNCH &&
@@ -112,21 +112,53 @@ void launchControlCallback(PocketbaseState &pocketbaseState) {
   }
 }
 
+struct PocketbaseHeartbeatTaskParams {
+  PocketbaseState &pocketbaseState;
+  PocketbaseArduino &pocketbaseConnection;
+  NTPClient &ntpClient;
+};
+
+PocketbaseHeartbeatTaskParams pocketbaseHeartbeatTaskParams = {
+    pocketbaseState, pocketbaseConnection, ntpClient};
+
+void pocketBaseHeartbeatTask(void *pvParameters) {
+  PocketbaseHeartbeatTaskParams *params =
+      static_cast<PocketbaseHeartbeatTaskParams *>(pvParameters);
+  if (params->pocketbaseState.isConnected) {
+    heartbeatPocketbase(params->pocketbaseConnection, params->pocketbaseState,
+                        params->ntpClient);
+
+    vTaskDelay(5000 / portTICK_PERIOD_MS); // Heartbeat every 5 seconds
+  }
+}
+
+void setupTasks() {
+  xTaskCreatePinnedToCore(pocketBaseHeartbeatTask,        // Task function
+                          "PocketbaseHeartbeat",          // Task name
+                          2048,                           // Stack size
+                          &pocketbaseHeartbeatTaskParams, // Task parameters
+                          1,                              // Priority
+                          NULL,                           // Task handle
+                          1);                             // Core ID
+}
+
 void setup() {
   Serial.begin(115200);
   initI2C();
-  initWiFi([]() {},                     // disconnectedCallback
+  /*initWiFi([]() {},                     // disconnectedCallback
            []() {},                     // connectedCallback
            []() { initNtp(ntpClient); } // gotIPCallback
   );
+  */
   pocketbaseState.launchControlCallback = launchControlCallback;
-  initPocketbase(pocketbaseConnection, pocketbaseState);
+  // initPocketbase(pocketbaseConnection, pocketbaseState);
+  // setupTasks(); // Initialize tasks
   Serial.println("Horizon ready");
 }
 
 void loop() {
   static Timer gatewayTimer(DATA_SEND_INTERVAL / 4); // Gateway poll timer
-  static Timer padTimer(DATA_SEND_INTERVAL / 2);     // Pad poll timer
+  static Timer padTimer(PAD_DATA_SEND_INTERVAL / 2); // Pad poll timer
   static Timer dataRateTimer(1000);                  // Data rate print timer
 
   i2cWorkaround(); // Ensure I2C bus is functional
@@ -166,6 +198,12 @@ void loop() {
     case LAUNCHED:
       launchState = "Launched";
       break;
+    case CANCELLING:
+      launchState = "Cancelling";
+      break;
+    case LAUNCHING:
+      launchState = "Launching";
+      break;
     case CANCELLED:
       launchState = "Cancelled";
       break;
@@ -177,8 +215,8 @@ void loop() {
     Serial.println(launchState);
   }
 
-  ntpClient.update(); // Update NTP time
-  pocketbaseLoop(pocketbaseState, pocketbaseConnection, ntpClient);
+  // ntpClient.update(); // Update NTP time
+  //  pocketbaseLoop(pocketbaseState, pocketbaseConnection, ntpClient);
 
   // debugSendCommandToGateway();
   debugSendCommandToPad();

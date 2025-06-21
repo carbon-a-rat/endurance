@@ -108,7 +108,7 @@ size_t requestFlightDataChunk(DataRateCounters &counter,
   return bytesRead;
 }
 
-// Handles a chunk of pad data received from the pad
+// Update handlePadDataChunk to use serialization/deserialization
 void handlePadDataChunk(uint8_t *chunk, int bytesRead,
                         LoadingDataState &state) {
   if (bytesRead < sizeof(PadDataPacket)) {
@@ -116,15 +116,9 @@ void handlePadDataChunk(uint8_t *chunk, int bytesRead,
     return;
   }
 
-  PadDataPacket packet;
-  memcpy(&packet, chunk, sizeof(PadDataPacket));
+  // Deserialize the chunk into a PadDataPacket
+  PadDataPacket packet = deserializePadDataPacket(chunk, bytesRead);
 
-  // Validate the launchState field
-  if (packet.launchState < STAND_BY || packet.launchState > CANCELLED) {
-    Serial.print("Invalid launchState received: ");
-    Serial.println(packet.launchState);
-    return; // Ignore invalid packets
-  }
   state.launchState = packet.launchState;
 
   switch (packet.type) {
@@ -132,15 +126,19 @@ void handlePadDataChunk(uint8_t *chunk, int bytesRead,
     state.previousWaterLoadingData = state.currentWaterLoadingData;
     state.currentWaterLoadingData = packet.data.waterLoadingData;
     break;
+
   case PadDataPacket::AIR_LOADING_DATA:
     state.previousAirLoadingData = state.currentAirLoadingData;
     state.currentAirLoadingData = packet.data.airLoadingData;
     break;
+
   case PadDataPacket::NO_DATA:
+    // No data to process
     break;
+
   default:
-    Serial.print("Unknown PadDataPacket type received! Type: ");
-    Serial.println(packet.type);
+    // Handle unknown type
+    Serial.println("Received unknown PadDataPacket type!");
     break;
   }
 
