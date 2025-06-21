@@ -159,7 +159,7 @@ void onDataReceived(unsigned char *mac_addr, unsigned char *data, uint8_t len) {
   FlightData flightData;
   memset(&flightData, 0, sizeof(FlightData));
   memcpy(&flightData, data, sizeof(FlightData));
-  // printFlightData(flightData);
+  printFlightData(flightData);
 
   uint8_t *packet = (uint8_t *)malloc(len);
   if (packet) {
