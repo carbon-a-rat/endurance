@@ -3,8 +3,10 @@
 
 #define ENDURANCE_CORE_H
 
-#define GATEWAY_DEBUG
+// #define GATEWAY_DEBUG
 #define PAD_DEBUG
+
+#include <Arduino.h>
 
 const int DATA_SEND_FREQUENCY = 32; // 32 Hz
 const long unsigned DATA_SEND_INTERVAL = 1000 / DATA_SEND_FREQUENCY;
@@ -68,7 +70,7 @@ struct AirLoadingData {
 };
 #pragma pack(pop)
 
-enum launchStates {
+enum launchStates : uint8_t {
   STAND_BY,
   FILLING_WATER,
   FILLED_WATER,
@@ -82,7 +84,7 @@ enum launchStates {
 
 #pragma pack(push, 1)
 struct PadDataPacket {
-  enum { NO_DATA, WATER_LOADING_DATA, AIR_LOADING_DATA } type;
+  enum : uint8_t { NO_DATA, WATER_LOADING_DATA, AIR_LOADING_DATA } type;
   launchStates launchState;
   union {
     WaterLoadingData waterLoadingData;
@@ -94,3 +96,7 @@ struct PadDataPacket {
 void printFlightData(const FlightData &flightData);
 void printWaterLoadingData(const WaterLoadingData &data);
 void printAirLoadingData(const AirLoadingData &data);
+void printPadDataPacket(const PadDataPacket &packet);
+uint8_t *serializePadDataPacket(const PadDataPacket &packet, size_t &size);
+PadDataPacket deserializePadDataPacket(const uint8_t *buffer,
+                                       size_t bufferSize);
