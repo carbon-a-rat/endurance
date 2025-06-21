@@ -37,11 +37,16 @@ volatile unsigned long i2cBytesWritten = 0;
 volatile unsigned long i2cBytesReceived = 0;
 unsigned long lastRatePrint = 0;
 unsigned long lastRate = 0;
+unsigned long lastI2CActivity = 0;
 
-#ifdef PAD_DEBUG
-unsigned long debugStartedFillingWater = 0;
-unsigned long debugStartedFillingAir = 0;
-#endif
+unsigned long startedFillingWater = 0;
+unsigned long startedFillingAir = 0;
+
+float maxPressure = 0.0;                // Maximum pressure recorded air loading
+unsigned long maxPressureTimestamp = 0; // Timestamp of maximum pressure
+
+// Add a new pulse counter for tracking flow rate
+volatile long flowRatePulse = 0;
 
 // Forward declarations
 void increase();
@@ -59,8 +64,9 @@ void onI2CReceive(int numBytes);
 void resetAfterLaunch();
 void endCancelFlight();
 void printI2CDataRate();
+void resetFlowRatePulse();
 
-const int BUFFER_SIZE = PAD_DATA_SEND_FREQUENCY * 2; // 2 seconds of data
+const int BUFFER_SIZE = PAD_DATA_SEND_FREQUENCY * 1.5; // 1.5 seconds of data
 struct CircularBuffer {
   PadDataPacket buffer[BUFFER_SIZE];
   int head = 0;
@@ -95,8 +101,8 @@ CircularBuffer padDataQueue;
 
 void updateLoadingData() {
 #ifdef PAD_DEBUG
-  long currentPulse = debugStartedFillingWater > 0
-                          ? (millis() - debugStartedFillingWater) / 1000 * 660 /
+  long currentPulse = startedFillingWater > 0
+                          ? (millis() - startedFillingWater) / 1000 * 660 /
                                 4 // 4 seconds of water flow
                           : 0;
 #else
@@ -104,48 +110,70 @@ void updateLoadingData() {
 #endif
   waterLoadingData.waterVolume = currentPulse / 660.0;
   waterLoadingData.error = waterLoadingData.waterVolume - targetWaterVolume;
-  waterLoadingData.waterFlowRate = waterLoadingData.waterVolume /
-                                   (millis() - waterLoadingData.timestamp) *
-                                   1000.0;
-  waterLoadingData.timestamp = millis();
+  // Ensure deltaTime is valid and reset flowRatePulse after calculation
+  unsigned long deltaTime = waterLoadingData.timestamp > 0
+                                ? millis() - waterLoadingData.timestamp
+                                : 0;
+  if (deltaTime >
+      10) { // Minimum threshold to avoid division by very small values
+    waterLoadingData.waterFlowRate =
+        flowRatePulse / 660.0 / (deltaTime / 1000.0);
+  } else {
+    waterLoadingData.waterFlowRate =
+        0; // Set flow rate to 0 if deltaTime is too small
+  }
+  resetFlowRatePulse(); // Reset the pulse counter after calculation
+  waterLoadingData.timestamp = millis() - startedFillingWater;
 
 #ifdef PAD_DEBUG
   airLoadingData.pressure =
-      debugStartedFillingAir > 0
-          ? 100.0 + (millis() - debugStartedFillingAir) / 1000.0 * 10.0
+      startedFillingAir > 0
+          ? 100.0 + (millis() - startedFillingAir) / 1000.0 * 10.0
           : 0; // Simulated pressure
 #else
-  airLoadingData.pressure = mpx5700.getPressureValue_kpa(1);
+  airLoadingData.pressure =
+      mpx5700.getPressureValue_kpa(1) - 100.0; /// Convert to relative pressure
 #endif
   airLoadingData.error = airLoadingData.pressure - targetAirPressure;
-  airLoadingData.timestamp = millis();
+  airLoadingData.timestamp = millis() - startedFillingAir;
+}
+
+// Add debug logs to inspect raw bytes of PadDataPacket
+void debugPadDataPacket(const PadDataPacket &packet) {
+  if (packet.type == PadDataPacket::NO_DATA) {
+    return;
+  }
+  Serial.print("PadDataPacket Type: ");
+  Serial.println(packet.type);
+  Serial.print("PadDataPacket LaunchState: ");
+  Serial.println(packet.launchState);
+  Serial.print("Raw Bytes: ");
+  for (size_t i = 0; i < sizeof(PadDataPacket); ++i) {
+    Serial.print(((uint8_t *)&packet)[i], HEX);
+    Serial.print(" ");
+  }
+  Serial.println();
 }
 
 void onI2CRequest() {
+  lastI2CActivity = millis(); // Update timestamp
   if (!padDataQueue.isEmpty()) {
     PadDataPacket packet;
     if (padDataQueue.dequeue(packet)) {
-      Wire.write((uint8_t *)&packet, sizeof(PadDataPacket));
-      i2cBytesWritten += sizeof(PadDataPacket); // Count bytes written
+      // Serialize the entire packet as raw bytes
+      size_t size = sizeof(PadDataPacket);
+
+      Wire.write((uint8_t *)&packet, size);
+      i2cBytesWritten += size; // Count bytes written
     }
   } else {
-    // Send an empty packet if the queue is empty
     PadDataPacket emptyPacket;
-    // Ensure all fields are initialized
     memset(&emptyPacket, 0, sizeof(PadDataPacket));
     emptyPacket.type = PadDataPacket::NO_DATA;
     emptyPacket.launchState = launchState;
-    // Serial.println("Queue is empty. Sending empty packet.");
-    //  Debug: Log raw bytes being sent
-    /*Serial.print("Raw I2C Data Sent: ");
-    for (size_t i = 0; i < sizeof(PadDataPacket); ++i) {
-      Serial.print(((uint8_t *)&emptyPacket)[i], HEX);
-      Serial.print(" ");
-    }
-    Serial.println();
-    */
-    Wire.write((uint8_t *)&emptyPacket, sizeof(PadDataPacket));
-    i2cBytesWritten += sizeof(PadDataPacket); // Count bytes written
+    size_t size = sizeof(PadDataPacket);
+    Wire.write((uint8_t *)&emptyPacket, size);
+    i2cBytesWritten += size; // Count bytes written
   }
 }
 
@@ -221,7 +249,6 @@ void setup() {
   initializeMPX5700();
 
   Serial.println("PAD ready");
-  Serial.println("Waiting for commands...");
 }
 
 void loop() {
@@ -242,13 +269,22 @@ void loop() {
       // Checks pressure sensor
 
       float currentAirPressure = airLoadingData.pressure;
-      if (currentAirPressure >= targetAirPressure) {
+
+      // Update maxPressure and maxPressureTimestamp
+      if (currentAirPressure >= maxPressure) {
+        maxPressure = currentAirPressure;
+        maxPressureTimestamp = millis();
+      }
+
+      // Detect pressure drop
+      if (millis() - maxPressureTimestamp > 3000) {
+        Serial.println("Fallback: Pressure drop detected");
+        launchState = READY_TO_LAUNCH;
+        stopAirFlow();
+      } else if (currentAirPressure >= targetAirPressure) {
         // Target air pressure reached. Now closing valve.
         launchState = READY_TO_LAUNCH;
         stopAirFlow();
-#ifdef PAD_DEBUG
-        debugStartedFillingAir = 0; // Reset debug timer
-#endif
       }
     }
 
@@ -261,9 +297,6 @@ void loop() {
         // Target water volume. Now closing valve.
         launchState = FILLED_WATER;
         stopWaterFlow();
-#ifdef PAD_DEBUG
-        debugStartedFillingWater = 0; // Reset debug timer
-#endif
       }
     }
   }
@@ -280,6 +313,14 @@ void loop() {
 
   if (dataSendTimer.expired()) {
     sendLoadingData();
+  }
+
+  // Check for I2C inactivity
+  if (millis() - lastI2CActivity > 1000) {
+    Serial.println("I2C inactivity detected. Resetting I2C wire...");
+    Wire.end();
+    initializeI2C();            // Reinitialize I2C
+    lastI2CActivity = millis(); // Reset the timestamp after reinitialization
   }
 }
 
@@ -327,8 +368,9 @@ void resetLaunchState() {
   Serial.println("Resetting launch state to STAND_BY.");
   launchState = STAND_BY;
   pulse = 0;                              // Reset the pulse count
-  waterLoadingData = WaterLoadingData();  // Reset water loading data
-  airLoadingData = AirLoadingData();      // Reset air loading data
+  flowRatePulse = 0;                      // Reset the flow rate pulse count
+  waterLoadingData = {0, 0.0, 0.0, 0.0};  // Reset water loading data
+  airLoadingData = {0, 0.0, 0.0};         // Reset air loading data
   digitalWrite(CYLINDER_PIN, LOW);        // Ensure the cylinder is closed
   digitalWrite(AIR_DISTRIBUTOR_PIN, LOW); // Ensure air distributor is closed
   digitalWrite(WATER_VALVE_PIN, LOW);     // Ensure water valve is closed
@@ -345,6 +387,10 @@ void fillAir() {
     return;
   }
 
+  // Reset maxPressure and maxPressureTimestamp before starting air filling
+  maxPressure = 0.0;
+  maxPressureTimestamp = 0;
+
   // Closes the circuit.
   digitalWrite(CANCEL_PIN, LOW);
 
@@ -352,10 +398,7 @@ void fillAir() {
   Serial.println("Starting to fill air...");
 
   launchState = FILLING_AIR;
-
-#ifdef PAD_DEBUG
-  debugStartedFillingAir = millis(); // Start the debug timer
-#endif
+  startedFillingAir = millis();
 }
 
 void fillWater() {
@@ -375,9 +418,8 @@ void fillWater() {
   Serial.println("Starting to fill water...");
 
   launchState = FILLING_WATER;
-#ifdef PAD_DEBUG
-  debugStartedFillingWater = millis(); // Start the debug timer
-#endif
+
+  startedFillingWater = millis(); // Start the debug timer
 }
 
 void stopWaterFlow() {
@@ -394,9 +436,15 @@ void stopAirFlow() {
   Serial.println("Air valve closed");
 }
 
-void increase() { pulse++; }
+void increase() {
+  pulse++;
+  flowRatePulse++; // Increment the flow rate pulse counter
+}
+
+void resetFlowRatePulse() { flowRatePulse = 0; }
 
 void onI2CReceive(int numBytes) {
+  lastI2CActivity = millis(); // Update timestamp
   Serial.print("I2C data received: ");
   Serial.print(numBytes);
   Serial.println(" bytes");
@@ -452,6 +500,7 @@ void onI2CReceive(int numBytes) {
   } else if (strncmp(start, "fill_air", 8) == 0) {
     if (launchState == FILLED_WATER) {
       targetAirPressure = atof(start + 9);
+
       fillAir();
     } else {
       Serial.println("Cannot fill air: water not filled yet.");
@@ -493,6 +542,11 @@ void printI2CDataRate() {
   Serial.print(writtenBytes);
   Serial.print(" B, Bytes received: ");
   Serial.println(receivedBytes);
+
+  // Print free memory
+  Serial.print("Free memory: ");
+  Serial.print(freeMemory());
+  Serial.println(" bytes");
 
   // Also print the current launch state
   Serial.print("Current launch state: ");
