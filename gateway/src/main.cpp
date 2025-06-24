@@ -20,7 +20,7 @@ struct GatewayState {
 int8_t dataQueueSizeSeconds = 10;
 
 GatewayState gatewayState = {
-    0, (uint16_t)(dataQueueSizeSeconds *DATA_SEND_FREQUENCY), 0, NULL};
+    0, (uint16_t)(dataQueueSizeSeconds * DATA_SEND_FREQUENCY), 0, NULL};
 
 bool ledState = false;
 long unsigned lastLedChangeTime;
@@ -77,7 +77,7 @@ void printMacAddresses() {
 // Initialize the packet queue in setup()
 void initializeGatewayQueue() {
   gatewayState.packetQueue =
-      (uint8_t **)calloc(gatewayState.packetQueueMaxSize, sizeof(uint8_t *));
+      (uint8_t **)ps_calloc(gatewayState.packetQueueMaxSize, sizeof(uint8_t *));
   if (!gatewayState.packetQueue) {
     Serial.println("Failed to allocate gateway packet queue!");
     while (true)
@@ -87,9 +87,9 @@ void initializeGatewayQueue() {
 
 // --- Initialize the outgoing queue ---
 void initializeOutgoingQueue() {
-  outgoingQueue.packetQueue =
-      (uint8_t **)calloc(outgoingQueue.packetQueueMaxSize, sizeof(uint8_t *));
-  outgoingQueue.packetSizes = (uint16_t *)calloc(
+  outgoingQueue.packetQueue = (uint8_t **)ps_calloc(
+      outgoingQueue.packetQueueMaxSize, sizeof(uint8_t *));
+  outgoingQueue.packetSizes = (uint16_t *)ps_calloc(
       outgoingQueue.packetQueueMaxSize, sizeof(uint16_t)); // <-- Add this
   if (!outgoingQueue.packetQueue || !outgoingQueue.packetSizes) {
     Serial.println("Failed to allocate outgoing packet queue!");
@@ -159,9 +159,10 @@ void onDataReceived(unsigned char *mac_addr, unsigned char *data, uint8_t len) {
   FlightData flightData;
   memset(&flightData, 0, sizeof(FlightData));
   memcpy(&flightData, data, sizeof(FlightData));
-  printFlightData(flightData);
+  // printFlightData(flightData); do not uncomment this line, it will flood the
+  // serial output and make the ESP32 crash
 
-  uint8_t *packet = (uint8_t *)malloc(len);
+  uint8_t *packet = (uint8_t *)ps_malloc(len);
   if (packet) {
     memcpy(packet, data, len);
     enqueueGatewayPacket(packet, len);
@@ -171,7 +172,8 @@ void onDataReceived(unsigned char *mac_addr, unsigned char *data, uint8_t len) {
 
   espNowBytesReceivedTotal += len;
 
-  // No integrated LED blinking on esp32-pico
+  // No integrated LED blinking onGateway MAC Address:  48:27:E2:55:07:EE
+  // esp32-pico
   /*if (millis() - lastLedChangeTime > LED_BLINK_DELAY) {
     if (ledState) {
       digitalWrite(LED_BUILTIN, LOW);
@@ -228,7 +230,7 @@ void onI2CReceive(int numBytes) {
   lastI2CActivity = millis();
   if (numBytes > 0) {
     i2cBytesReceivedTotal += numBytes; // NEW: Count incoming I2C bytes
-    uint8_t *packet = (uint8_t *)malloc(numBytes);
+    uint8_t *packet = (uint8_t *)ps_malloc(numBytes);
     if (packet) {
       for (int i = 0; i < numBytes; ++i) {
         if (Wire.available()) {
@@ -263,7 +265,6 @@ void onI2CReceive(int numBytes) {
 
 void initializeEspNow() {
   macAddressToByteArray(PROBE_MAC_ADDRESS, probeMacAddress); // Use global
-  Serial.println("ESP-NOW initialized successfully.");
 
   // ESP32: Register receive callback
   esp_now_register_recv_cb([](const uint8_t *mac_addr, const uint8_t *data,
@@ -281,13 +282,14 @@ void initializeEspNow() {
       Serial.println("Failed to add ESP-NOW peer!");
     }
   }
+  Serial.println("ESP-NOW initialized successfully.");
 }
 
 void initI2CSlave() {
   Wire.end(); // In case already initialized
   delay(10);
-  Wire.begin(GATEWAY_I2C_ADDRESS, 21, 22,
-             ENDURANCE_I2C_BUS_SPEED); // Use defined bus speed and pins
+  Wire.begin(GATEWAY_I2C_ADDRESS);        // Initialize as slave with address
+  Wire.setClock(ENDURANCE_I2C_BUS_SPEED); // Set I2C bus speed
   Wire.setTimeOut(ENDURANCE_I2C_TIMEOUT);
   Wire.onRequest(onI2CRequest);
   Wire.onReceive(onI2CReceive);
@@ -298,10 +300,17 @@ void initI2CSlave() {
 }
 
 void setup() {
+
   Serial.begin(115200);
   Serial.println();
   Serial.println("Starting Gateway...");
   printMacAddresses();
+
+  // Initialize the gateway packet queue
+  initializeGatewayQueue();
+
+  initializeOutgoingQueue();
+
   Serial.println("Initializing ESP-NOW...");
   WiFi.mode(WIFI_STA);
   if (esp_now_init() != 0) {
@@ -313,10 +322,6 @@ void setup() {
   initializeEspNow();
 
   lastLedChangeTime = millis();
-
-  // Initialize the gateway packet queue
-  initializeGatewayQueue();
-  initializeOutgoingQueue();
 
   delay(500); // Wait for horizon to start I2C master
   Serial.println("Initializing I2C as slave...");
@@ -366,7 +371,7 @@ void debugAddSampleDataToQueue() {
   sampleData.isLanded = debugIsLanded;
 
   // Allocate memory for the packet
-  uint8_t *packet = (uint8_t *)malloc(sizeof(FlightData));
+  uint8_t *packet = (uint8_t *)ps_malloc(sizeof(FlightData));
   if (packet) {
     memcpy(packet, &sampleData, sizeof(FlightData));
     enqueueGatewayPacket(packet, sizeof(FlightData));
@@ -428,7 +433,7 @@ void loop() {
 
 #endif
   // I2C watchdog: re-init if no activity for 5 seconds
-  if (millis() - lastI2CActivity > 5000) {
+  if (millis() - lastI2CActivity > 2000) {
     Serial.println("I2C inactivity detected, re-initializing I2C slave...");
     initI2CSlave();
   }

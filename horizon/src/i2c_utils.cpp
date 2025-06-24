@@ -30,7 +30,7 @@ void i2cBusRecovery() {
 // Initializes the I2C bus and prints status
 void initI2C() {
   i2cBusRecovery();
-  Wire.begin();
+  Wire.begin(SDA_PIN, SCL_PIN);           // Initialize I2C with custom pins
   Wire.setClock(ENDURANCE_I2C_BUS_SPEED); // Set I2C bus speed
   Wire.setTimeOut(ENDURANCE_I2C_TIMEOUT);
   Serial.print("I2C Master ready at ");

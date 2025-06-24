@@ -10,6 +10,8 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <Wire.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <functional>
 
 // Core Endurance library
@@ -118,57 +120,91 @@ struct PocketbaseHeartbeatTaskParams {
   NTPClient &ntpClient;
 };
 
-PocketbaseHeartbeatTaskParams pocketbaseHeartbeatTaskParams = {
-    pocketbaseState, pocketbaseConnection, ntpClient};
+void pocketbaseHeartbeatTask(void *pvParameters) {
+  Serial.println("Pocketbase Heartbeat Task started."); // Debug print
 
-void pocketBaseHeartbeatTask(void *pvParameters) {
-  PocketbaseHeartbeatTaskParams *params =
-      static_cast<PocketbaseHeartbeatTaskParams *>(pvParameters);
-  if (params->pocketbaseState.isConnected) {
-    heartbeatPocketbase(params->pocketbaseConnection, params->pocketbaseState,
-                        params->ntpClient);
+  while (true) {
+    if (pocketbaseState.isConnected) {
+      Serial.println("Sending heartbeat..."); // Debug print
+      heartbeatPocketbase(pocketbaseConnection, pocketbaseState, ntpClient);
+    } else {
+      Serial.println(
+          "Pocketbase is not connected. Skipping heartbeat."); // Debug print
+    }
 
-    vTaskDelay(5000 / portTICK_PERIOD_MS); // Heartbeat every 5 seconds
+    vTaskDelay(pdMS_TO_TICKS(5000)); // Delay for heartbeat interval
+  }
+}
+
+// Declare a mutex for I2C bus access
+SemaphoreHandle_t i2cMutex;
+
+void gatewayLinkTask(void *pvParameters) {
+  while (true) {
+    // Take the mutex before accessing the I2C bus
+    if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE) {
+      requestFlightDataChunk(dataRateCounters, flightDataState);
+      // Release the mutex after accessing the I2C bus
+      xSemaphoreGive(i2cMutex);
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(DATA_SEND_INTERVAL / 4)); // Poll every 250ms
+  }
+}
+
+void padLinkTask(void *pvParameters) {
+  while (true) {
+    // Take the mutex before accessing the I2C bus
+    if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE) {
+      requestPadDataChunk(dataRateCounters, loadingDataState);
+      // Release the mutex after accessing the I2C bus
+      xSemaphoreGive(i2cMutex);
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(PAD_DATA_SEND_INTERVAL / 2)); // Poll every 500ms
   }
 }
 
 void setupTasks() {
-  xTaskCreatePinnedToCore(pocketBaseHeartbeatTask,        // Task function
-                          "PocketbaseHeartbeat",          // Task name
-                          2048,                           // Stack size
-                          &pocketbaseHeartbeatTaskParams, // Task parameters
-                          1,                              // Priority
-                          NULL,                           // Task handle
-                          1);                             // Core ID
+  xTaskCreatePinnedToCore(pocketbaseHeartbeatTask, // Task function
+                          "PocketbaseHeartbeat",   // Task name
+                          8192,                    // Stack size
+                          NULL,                    // Task parameters
+                          2,                       // Priority
+                          NULL,                    // Task handle
+                          1);                      // Core ID
+
+  xTaskCreatePinnedToCore(gatewayLinkTask, "GatewayLink", 2048, NULL, 1, NULL,
+                          0); // Create gateway link task on core 1
+  xTaskCreatePinnedToCore(padLinkTask, "PadLink", 2048, NULL, 1, NULL,
+                          0); // Create pad link task on core 1
 }
 
 void setup() {
   Serial.begin(115200);
   initI2C();
-  /*initWiFi([]() {},                     // disconnectedCallback
+  initWiFi([]() {},                     // disconnectedCallback
            []() {},                     // connectedCallback
            []() { initNtp(ntpClient); } // gotIPCallback
   );
-  */
   pocketbaseState.launchControlCallback = launchControlCallback;
-  // initPocketbase(pocketbaseConnection, pocketbaseState);
-  // setupTasks(); // Initialize tasks
+  initPocketbase(pocketbaseConnection, pocketbaseState);
+
+  // Ensure the mutex is created before initializing tasks
+  i2cMutex = xSemaphoreCreateMutex();
+  if (i2cMutex == NULL) {
+    Serial.println("Failed to create I2C mutex");
+    while (true) {
+      delay(1000); // Halt execution if mutex creation fails
+    }
+  }
+
+  setupTasks(); // Initialize tasks
   Serial.println("Horizon ready");
 }
 
 void loop() {
-  static Timer gatewayTimer(DATA_SEND_INTERVAL / 4); // Gateway poll timer
-  static Timer padTimer(PAD_DATA_SEND_INTERVAL / 2); // Pad poll timer
-  static Timer dataRateTimer(1000);                  // Data rate print timer
-
-  i2cWorkaround(); // Ensure I2C bus is functional
-
-  if (gatewayTimer.expired()) {
-    requestFlightDataChunk(dataRateCounters, flightDataState);
-  }
-  if (padTimer.expired()) {
-    requestPadDataChunk(dataRateCounters, loadingDataState);
-  }
+  static Timer dataRateTimer(1000); // Data rate print timer
 
   computeI2CDataRates(dataRateCounters);
 
@@ -213,10 +249,18 @@ void loop() {
     }
     Serial.print("Launch State: ");
     Serial.println(launchState);
+
+    // Monitor FreeRTOS tasks
+    Serial.print("FreeRTOS Tasks: ");
+    Serial.print(uxTaskGetNumberOfTasks());
+    Serial.print(", Free Heap: ");
+    Serial.print(
+        uxTaskGetStackHighWaterMark(NULL)); // Get stack high water mark
+    Serial.print(", Free Memory: ");
+    Serial.println(ESP.getFreeHeap()); // Get free heap memory
   }
 
-  // ntpClient.update(); // Update NTP time
-  //  pocketbaseLoop(pocketbaseState, pocketbaseConnection, ntpClient);
+  ntpClient.update(); // Update NTP time
 
   // debugSendCommandToGateway();
   debugSendCommandToPad();

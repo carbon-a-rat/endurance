@@ -3,7 +3,7 @@
 
 #define ENDURANCE_CORE_H
 
-// #define GATEWAY_DEBUG
+#define GATEWAY_DEBUG
 #define PAD_DEBUG
 
 #include <Arduino.h>
@@ -18,7 +18,7 @@ const int LED_BLINK_FREQUENCY = 4; // 4 Hz
 const long unsigned LED_BLINK_DELAY = 1000 / LED_BLINK_FREQUENCY;
 
 // I2C addresses for gateway and pad
-const long ENDURANCE_I2C_BUS_SPEED = 400000L; // 400 kHz fast mode
+const long ENDURANCE_I2C_BUS_SPEED = 50000; // 100 kHz fast mode
 const long ENDURANCE_I2C_BUS_SPEED_WORKAROUND =
     1000000L; // 1 MHz workaround for ESP32
 const int ENDURANCE_I2C_TIMEOUT = 25;

@@ -103,19 +103,6 @@ void onLaunchUpdate(SubscriptionEvent &ev, void *ctx) {
   }
 }
 
-void pocketbaseLoop(PocketbaseState &pocketbaseState,
-                    PocketbaseArduino &pocketbaseConnection,
-                    NTPClient &ntpClient) {
-  static Timer heartbeatTimer(5000); // 10 seconds heartbeat interval
-  if (pocketbaseState.isConnected) {
-    pocketbaseConnection.update_subscription();
-
-    if (heartbeatTimer.expired()) {
-      heartbeatPocketbase(pocketbaseConnection, pocketbaseState, ntpClient);
-    }
-  }
-}
-
 String epochToPocketbaseTime(unsigned long epochTime) {
   // Convert NTP epoch time to Pocketbase format using strftime
   static String pocketbaseTime;
