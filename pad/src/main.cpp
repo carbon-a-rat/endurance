@@ -42,6 +42,8 @@ unsigned long lastI2CActivity = 0;
 unsigned long startedFillingWater = 0;
 unsigned long startedFillingAir = 0;
 
+float zeroPressure = 0.0; // Zero reference for pressure sensor
+
 float maxPressure = 0.0;                // Maximum pressure recorded air loading
 unsigned long maxPressureTimestamp = 0; // Timestamp of maximum pressure
 
@@ -65,6 +67,7 @@ void resetAfterLaunch();
 void endCancelFlight();
 void printI2CDataRate();
 void resetFlowRatePulse();
+void resetLaunchState();
 
 const int BUFFER_SIZE = PAD_DATA_SEND_FREQUENCY * 1.5; // 1.5 seconds of data
 struct CircularBuffer {
@@ -131,28 +134,14 @@ void updateLoadingData() {
           ? 100.0 + (millis() - startedFillingAir) / 1000.0 * 10.0
           : 0; // Simulated pressure
 #else
-  airLoadingData.pressure =
-      mpx5700.getPressureValue_kpa(1) - 100.0; /// Convert to relative pressure
+  float sensorValue = mpx5700.getPressureValue_kpa(1);
+  /*airLoadingData.pressure =
+      sensorValue -
+      zeroPressure; // Convert to relative pressure using zero reference*/
+  airLoadingData.pressure = sensorValue - 100.0; // Adjusted for calibration
 #endif
   airLoadingData.error = airLoadingData.pressure - targetAirPressure;
   airLoadingData.timestamp = millis() - startedFillingAir;
-}
-
-// Add debug logs to inspect raw bytes of PadDataPacket
-void debugPadDataPacket(const PadDataPacket &packet) {
-  if (packet.type == PadDataPacket::NO_DATA) {
-    return;
-  }
-  Serial.print("PadDataPacket Type: ");
-  Serial.println(packet.type);
-  Serial.print("PadDataPacket LaunchState: ");
-  Serial.println(packet.launchState);
-  Serial.print("Raw Bytes: ");
-  for (size_t i = 0; i < sizeof(PadDataPacket); ++i) {
-    Serial.print(((uint8_t *)&packet)[i], HEX);
-    Serial.print(" ");
-  }
-  Serial.println();
 }
 
 void onI2CRequest() {
@@ -231,7 +220,7 @@ void initializeMPX5700() {
   Serial.println("[DEBUG] Initializing MPX5700 (Fake Mode)");
 #else
   while (!mpx5700.begin()) {
-    Serial.println("MPX5700 begin fail, please check connect!");
+    Serial.println("MPX5700 begin failed");
     delay(1000);
   }
   Serial.println("i2c begin success");
@@ -244,9 +233,15 @@ void setup() {
 
   initializePins();
   attachInterrupt(digitalPinToInterrupt(sensorPin), increase, RISING);
+  resetLaunchState();
 
   initializeI2C();
   initializeMPX5700();
+
+  // Read the initial pressure value as zero reference
+  zeroPressure = mpx5700.getPressureValue_kpa(1);
+  Serial.print("ZeroPressure: ");
+  Serial.println(zeroPressure);
 
   Serial.println("PAD ready");
 }
@@ -254,8 +249,7 @@ void setup() {
 void loop() {
 
   static Timer dataRateTimer(1000);
-  static Timer sensorCheckTimer(
-      DATA_SEND_INTERVAL); // Timer for checking sensors
+  static Timer sensorCheckTimer(0); // Timer for checking sensors
   static Timer dataSendTimer(PAD_DATA_SEND_INTERVAL); // Timer for sending data
 
   // Print I2C data rate every second
@@ -306,8 +300,8 @@ void loop() {
     resetAfterLaunch();
   }
 
-  if (launchState == CANCELLING && millis() - cancelTimestamp >= 1000) {
-    // Wait for 1 second after cancel to end the procedure
+  if (launchState == CANCELLING && millis() - cancelTimestamp >= 20000) {
+    // Wait for 20 seconds after cancel to end the procedure
     endCancelFlight();
   }
 
@@ -317,7 +311,7 @@ void loop() {
 
   // Check for I2C inactivity
   if (millis() - lastI2CActivity > 1000) {
-    Serial.println("I2C inactivity detected. Resetting I2C wire...");
+    Serial.println("I2C reset...");
     Wire.end();
     initializeI2C();            // Reinitialize I2C
     lastI2CActivity = millis(); // Reset the timestamp after reinitialization
@@ -332,7 +326,7 @@ void launchFlight() {
     launchState = LAUNCHING;
     launchTimestamp = millis(); // Record the launch time
   } else {
-    Serial.println("WARNING: Launch not ready yet.");
+    Serial.println("Not ready yet.");
   }
 }
 
@@ -365,7 +359,7 @@ void endCancelFlight() {
 
 void resetLaunchState() {
   // Resets the launch state to STAND_BY.
-  Serial.println("Resetting launch state to STAND_BY.");
+  Serial.println("Resetting launch state");
   launchState = STAND_BY;
   pulse = 0;                              // Reset the pulse count
   flowRatePulse = 0;                      // Reset the flow rate pulse count
@@ -375,7 +369,11 @@ void resetLaunchState() {
   digitalWrite(AIR_DISTRIBUTOR_PIN, LOW); // Ensure air distributor is closed
   digitalWrite(WATER_VALVE_PIN, LOW);     // Ensure water valve is closed
   digitalWrite(CANCEL_PIN, LOW);          // Ensure cancel pin is low
-  Serial.println("Launch state reset complete.");
+  zeroPressure = mpx5700.getPressureValue_kpa(1);
+  Serial.print("ZeroPressure: ");
+  Serial.println(zeroPressure);
+
+  Serial.println("Reset complete.");
 }
 
 void fillAir() {
@@ -383,7 +381,7 @@ void fillAir() {
 
   // Doesn't close the cancel_pin as it should already be closed.
   if (launchState != FILLED_WATER) {
-    Serial.println("WARNING: Water hasn't been filled yet !");
+    Serial.println("Water hasn't been filled yet !");
     return;
   }
 
@@ -405,7 +403,7 @@ void fillWater() {
   // Starts to fill the rocket with water.
 
   if (launchState == FILLED_WATER) {
-    Serial.println("WARNING: Water has already been filled !");
+    Serial.println("Water has already been filled !");
   }
 
   // Resets the pulse to start counting again.
@@ -551,4 +549,9 @@ void printI2CDataRate() {
   // Also print the current launch state
   Serial.print("Current launch state: ");
   Serial.println(launchState);
+
+  Serial.print("Current air pressure: ");
+  Serial.println(airLoadingData.pressure);
+  Serial.print("Target air pressure: ");
+  Serial.println(targetAirPressure);
 }

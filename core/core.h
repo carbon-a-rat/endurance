@@ -4,7 +4,7 @@
 #define ENDURANCE_CORE_H
 
 #define GATEWAY_DEBUG
-#define PAD_DEBUG
+// #define PAD_DEBUG
 
 #include <Arduino.h>
 
@@ -70,6 +70,15 @@ struct AirLoadingData {
 };
 #pragma pack(pop)
 
+struct LauncherData {
+  bool isProbeConnected;
+  uint8_t probeBatteryLevel; // 0-100%
+  float lastPressure;
+  float lastWaterFlow;
+  float lastAcc;
+  float lastAltitude;
+};
+
 enum launchStates : uint8_t {
   STAND_BY,
   FILLING_WATER,
@@ -92,6 +101,33 @@ struct PadDataPacket {
   } data;
 };
 #pragma pack(pop)
+
+enum LaunchUpdateType : uint8_t {
+  STARTED_WATER_LOADING,
+  STARTED_AIR_LOADING,
+  LOAD_COMPLETED,
+  FIRED,
+  LANDED,
+  CANCELLED_,
+};
+
+struct LaunchUpdate {
+  LaunchUpdateType type;
+  long unsigned timestamp;
+};
+
+enum LogLevel : uint8_t { LOG_DEBUG, LOG_INFO, LOG_WARNING, LOG_ERROR };
+
+struct LauncherLog {
+  long unsigned timestamp;
+  LogLevel level;
+  String event;
+  String message;
+};
+
+struct Heartbeat {
+  long unsigned timestamp;
+};
 
 void printFlightData(const FlightData &flightData);
 void printWaterLoadingData(const WaterLoadingData &data);
