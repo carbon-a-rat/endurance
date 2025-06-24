@@ -38,7 +38,6 @@ unsigned long startedFillingAir = 0;
 
 float zeroPressure = 0.0; // Zero reference for pressure sensor
 
-float maxPressure = 0.0;                // Maximum pressure recorded air loading
 unsigned long maxPressureTimestamp = 0; // Timestamp of maximum pressure
 
 // Add a new pulse counter for tracking flow rate
@@ -267,21 +266,16 @@ void loop() {
 
       float currentAirPressure = airLoadingData.pressure;
 
-      // Update maxPressure and maxPressureTimestamp
-      if (currentAirPressure >= maxPressure) {
-        maxPressure = currentAirPressure;
-        maxPressureTimestamp = millis();
-      }
-
-      // Detect pressure drop
-      if (millis() - maxPressureTimestamp > 3000) {
-        Serial.println("Fallback: Pressure drop detected");
-        launchState = READY_TO_LAUNCH;
-        stopAirFlow();
-      } else if (currentAirPressure >= targetAirPressure) {
-        // Target air pressure reached. Now closing valve.
-        launchState = READY_TO_LAUNCH;
-        stopAirFlow();
+      // Detect if pressure exceeds threshold for 3 seconds
+      if (currentAirPressure >= 690.0) {
+        if (millis() - maxPressureTimestamp > 3000) {
+          // Target air pressure reached for 3 seconds. Now closing valve.
+          launchState = READY_TO_LAUNCH;
+          stopAirFlow();
+        } else {
+          maxPressureTimestamp =
+              millis(); // Reset timestamp if pressure is still high
+        }
       }
     }
 
@@ -388,9 +382,8 @@ void fillAir() {
     return;
   }
 
-  // Reset maxPressure and maxPressureTimestamp before starting air filling
-  maxPressure = 0.0;
-  maxPressureTimestamp = 0;
+  // Reset maxPressureTimestamp before starting air filling
+  maxPressureTimestamp = millis();
 
   // Closes the circuit.
   digitalWrite(CANCEL_PIN, LOW);
