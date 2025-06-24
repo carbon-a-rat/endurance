@@ -4,18 +4,12 @@
 #include <Wire.h>
 #include <core.h>
 
-#include "DFRobot_MPX5700SoftWire.h"
-
-#define AIR_SENSOR_I2C_ADDRESS 0x16
+#define PRESSURE_SENSOR_PIN A0 // Pin for MPX5700AP pressure sensor
 
 #define CANCEL_PIN 13
 #define AIR_DISTRIBUTOR_PIN 12
 #define CYLINDER_PIN 11
 #define WATER_VALVE_PIN 10
-
-SoftWire Wire1(4, 5);
-
-DFRobot_MPX5700 mpx5700(&Wire1, AIR_SENSOR_I2C_ADDRESS);
 
 float targetAirPressure = 300.0; // in kPa
 float targetWaterVolume = 0.5;   // in L
@@ -68,6 +62,16 @@ void endCancelFlight();
 void printI2CDataRate();
 void resetFlowRatePulse();
 void resetLaunchState();
+
+float readMPX5700APSensor() {
+  static float VFSO = 4.7;
+
+  float v = analogRead(PRESSURE_SENSOR_PIN) / 1023.0 *
+            VFSO; // Read the analog value and convert to voltage
+  float pressure = 15 + (v - 0.2) * (700 - 15) /
+                            (4.7 - 0.2); // Convert voltage to pressure in kPa
+  return pressure;                       // Return pressure in kPa
+}
 
 const int BUFFER_SIZE = PAD_DATA_SEND_FREQUENCY * 1.5; // 1.5 seconds of data
 struct CircularBuffer {
@@ -134,11 +138,8 @@ void updateLoadingData() {
           ? 100.0 + (millis() - startedFillingAir) / 1000.0 * 10.0
           : 0; // Simulated pressure
 #else
-  float sensorValue = mpx5700.getPressureValue_kpa(1);
-  /*airLoadingData.pressure =
-      sensorValue -
-      zeroPressure; // Convert to relative pressure using zero reference*/
-  airLoadingData.pressure = sensorValue - 100.0; // Adjusted for calibration
+  float sensorValue = readMPX5700APSensor();
+  airLoadingData.pressure = sensorValue - zeroPressure;
 #endif
   airLoadingData.error = airLoadingData.pressure - targetAirPressure;
   airLoadingData.timestamp = millis() - startedFillingAir;
@@ -219,12 +220,14 @@ void initializeMPX5700() {
 #ifdef PAD_DEBUG
   Serial.println("[DEBUG] Initializing MPX5700 (Fake Mode)");
 #else
-  while (!mpx5700.begin()) {
-    Serial.println("MPX5700 begin failed");
-    delay(1000);
+  float pressure = readMPX5700APSensor();
+  if (pressure < 0) {
+    Serial.println("Error reading MPX5700AP sensor. Check wiring.");
+  } else {
+    Serial.print("MPX5700AP initialized. Pressure: ");
+    Serial.print(pressure);
+    Serial.println(" kPa");
   }
-  Serial.println("i2c begin success");
-  mpx5700.setMeanSampleSize(5);
 #endif
 }
 
@@ -239,7 +242,7 @@ void setup() {
   initializeMPX5700();
 
   // Read the initial pressure value as zero reference
-  zeroPressure = mpx5700.getPressureValue_kpa(1);
+  zeroPressure = readMPX5700APSensor();
   Serial.print("ZeroPressure: ");
   Serial.println(zeroPressure);
 
@@ -369,7 +372,7 @@ void resetLaunchState() {
   digitalWrite(AIR_DISTRIBUTOR_PIN, LOW); // Ensure air distributor is closed
   digitalWrite(WATER_VALVE_PIN, LOW);     // Ensure water valve is closed
   digitalWrite(CANCEL_PIN, LOW);          // Ensure cancel pin is low
-  zeroPressure = mpx5700.getPressureValue_kpa(1);
+  zeroPressure = readMPX5700APSensor();   // Reset zero pressure reference
   Serial.print("ZeroPressure: ");
   Serial.println(zeroPressure);
 
