@@ -4,9 +4,6 @@
 #include <NTPClient.h>
 #include <Timer.h>
 
-void initPocketbase(PocketbaseArduino &pocketbaseConnection,
-                    PocketbaseState &pocketbaseState);
+void initPocketbase();
 String epochToPocketbaseTime(unsigned long epochTime);
-void heartbeatPocketbase(PocketbaseArduino &pocketbaseConnection,
-                         PocketbaseState &pocketbaseState,
-                         NTPClient &ntpClient);
+void onLaunchUpdate(SubscriptionEvent &ev, void *ctx);

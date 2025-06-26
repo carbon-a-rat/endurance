@@ -1,18 +1,17 @@
 #include "pocketbase_utils.h"
 #include "EnduranceConfig.h"
+#include "state.h"
 #include <Arduino.h>
 
-void onLauncherUpdate(SubscriptionEvent &ev, void *ctx);
 void onLaunchUpdate(SubscriptionEvent &ev, void *ctx);
 
-void initPocketbase(PocketbaseArduino &pocketbaseConnection,
-                    PocketbaseState &pocketbaseState) {
+void initPocketbase() {
   bool connected = false;
   int retryCount = 0;
   const int maxRetries = 10;
   Serial.println("Connecting to Pocketbase...");
   while (!connected && retryCount < maxRetries) {
-    connected = pocketbaseConnection.login_passwd(
+    connected = pocketbaseUploadConnection.login_passwd(
         DEATH_STAR_POCKETBASE_IDENTITY, DEATH_STAR_POCKETBASE_PASSWORD,
         "launchers");
     Serial.print("Pocketbase login attempt: ");
@@ -23,50 +22,20 @@ void initPocketbase(PocketbaseArduino &pocketbaseConnection,
       retryCount++;
     } else {
       Serial.println("Pocketbase login successful!");
-      pocketbaseState.launcherRecord =
-          pocketbaseConnection.getConnectionRecord();
+      pocketbaseState.launcherRecord.clear();
+      pocketbaseState.launcherRecord.set(
+          pocketbaseUploadConnection.getConnectionRecord());
       pocketbaseState.isConnected = true;
       Serial.println("Pocketbase launcher record: " +
                      pocketbaseState.launcherRecord.as<String>());
-      /*pocketbaseConnection.subscribe(
-          "launchers",
-          pocketbaseState.launcherRecord["record"]["id"].as<String>().c_str(),
-          onLauncherUpdate, &pocketbaseState);*/
-      pocketbaseConnection.subscribe("launches", "*", onLaunchUpdate,
-                                     &pocketbaseState);
+      pocketbaseUploadConnection.subscribe("launches", "*", onLaunchUpdate,
+                                           &pocketbaseState);
     }
   }
   if (!connected) {
     Serial.println("ERROR: Could not connect to Pocketbase after retries.");
   }
 }
-// This function handles updates from the Pocketbase launcher subscription
-/*
-void onLauncherUpdate(SubscriptionEvent &ev, void *ctx) {
-  PocketbaseState &pocketbaseState = *static_cast<PocketbaseState *>(ctx);
-  // Handle the launcher update event
-  DynamicJsonDocument launcherUpdate(1024); // Adjust size as needed
-  DeserializationError error = deserializeJson(launcherUpdate, ev.data);
-  if (error) {
-    Serial.print("Failed to parse launcher update: ");
-    Serial.println(error.c_str());
-    return;
-  }
-  String action = launcherUpdate["action"].as<String>();
-  if (action == "update") {
-    // Update the launcher record in the state
-    pocketbaseState.launcherRecord = launcherUpdate;
-    pocketbaseState.launcherRecord = pocketbaseState.launcherRecord;
-  } else if (action == "delete") {
-    // Handle deletion if needed
-    Serial.println("Launcher record deleted.");
-    pocketbaseState.isConnected = false;
-  } else {
-    Serial.print("Unknown action in launcher update: ");
-    Serial.println(action);
-  }
-}
-  */
 
 void onLaunchUpdate(SubscriptionEvent &ev, void *ctx) {
   PocketbaseState &pocketbaseState = *static_cast<PocketbaseState *>(ctx);
@@ -85,6 +54,10 @@ void onLaunchUpdate(SubscriptionEvent &ev, void *ctx) {
       if (launchUpdate["record"]["launcher"] ==
           pocketbaseState.launcherRecord["record"]["id"]) {
         pocketbaseState.launchRecord = launchUpdate;
+        // Call the launch control callback if set
+        if (pocketbaseState.launchControlCallback) {
+          pocketbaseState.launchControlCallback();
+        }
       }
     }
   } else {
@@ -96,7 +69,7 @@ void onLaunchUpdate(SubscriptionEvent &ev, void *ctx) {
         pocketbaseState.launchRecord = launchUpdate;
         // Call the launch control callback if set
         if (pocketbaseState.launchControlCallback) {
-          pocketbaseState.launchControlCallback(pocketbaseState);
+          pocketbaseState.launchControlCallback();
         }
       }
     }
@@ -112,14 +85,4 @@ String epochToPocketbaseTime(unsigned long epochTime) {
   strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", timeinfo);
   pocketbaseTime = String(buffer);
   return pocketbaseTime;
-}
-
-void heartbeatPocketbase(PocketbaseArduino &pocketbaseConnection,
-                         PocketbaseState &pocketbaseState,
-                         NTPClient &ntpClient) {
-
-  pocketbaseConnection.update(
-      "launchers", pocketbaseState.launcherRecord["record"]["id"].as<String>(),
-      "{\"online\": true, \"last_ping_at\": \"" +
-          epochToPocketbaseTime(ntpClient.getEpochTime()) + "\"}");
 }

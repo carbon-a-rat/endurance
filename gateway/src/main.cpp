@@ -152,6 +152,7 @@ void dequeueOutgoingPacket() {
 }
 
 void onDataReceived(unsigned char *mac_addr, unsigned char *data, uint8_t len) {
+  static Timer printTimer(100); // Print every second
   if (len < sizeof(FlightData)) {
     Serial.println("Received data too short for FlightData!");
     return;
@@ -159,8 +160,11 @@ void onDataReceived(unsigned char *mac_addr, unsigned char *data, uint8_t len) {
   FlightData flightData;
   memset(&flightData, 0, sizeof(FlightData));
   memcpy(&flightData, data, sizeof(FlightData));
-  // printFlightData(flightData); do not uncomment this line, it will flood the
-  // serial output and make the ESP32 crash
+  if (printTimer.expired()) {
+    // printFlightData(flightData);
+  }
+  // printFlightData(flightData); // do not uncomment this line, it will flood
+  // the serial output and make the ESP32 crash
 
   uint8_t *packet = (uint8_t *)ps_malloc(len);
   if (packet) {

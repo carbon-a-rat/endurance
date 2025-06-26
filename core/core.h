@@ -3,12 +3,12 @@
 
 #define ENDURANCE_CORE_H
 
-#define GATEWAY_DEBUG
-// #define PAD_DEBUG
+// #define GATEWAY_DEBUG
+//  #define PAD_DEBUG
 
 #include <Arduino.h>
 
-const int DATA_SEND_FREQUENCY = 32; // 32 Hz
+const int DATA_SEND_FREQUENCY = 16; // 16 Hz
 const long unsigned DATA_SEND_INTERVAL = 1000 / DATA_SEND_FREQUENCY;
 
 const int PAD_DATA_SEND_FREQUENCY = 8; // 8 Hz
@@ -50,6 +50,19 @@ struct FlightData {
   bool isDeployed;
   bool isFlying;
   bool isLanded;
+
+  // Comparison operators
+  bool operator==(const FlightData &other) const {
+    return timestamp == other.timestamp && pressure == other.pressure &&
+           temperature == other.temperature && altitude == other.altitude &&
+           ax == other.ax && ay == other.ay && az == other.az &&
+           gx == other.gx && gy == other.gy && gz == other.gz &&
+           batteryLevel == other.batteryLevel &&
+           isDeployed == other.isDeployed && isFlying == other.isFlying &&
+           isLanded == other.isLanded;
+  }
+
+  bool operator!=(const FlightData &other) const { return !(*this == other); }
 };
 #pragma pack(pop)
 
@@ -59,6 +72,16 @@ struct WaterLoadingData {
   float waterVolume;
   float waterFlowRate;
   float error;
+
+  // Comparison operators
+  bool operator==(const WaterLoadingData &other) const {
+    return timestamp == other.timestamp && waterVolume == other.waterVolume &&
+           waterFlowRate == other.waterFlowRate && error == other.error;
+  }
+
+  bool operator!=(const WaterLoadingData &other) const {
+    return !(*this == other);
+  }
 };
 #pragma pack(pop)
 
@@ -67,6 +90,16 @@ struct AirLoadingData {
   long unsigned timestamp;
   float pressure;
   float error;
+
+  // Comparison operators
+  bool operator==(const AirLoadingData &other) const {
+    return timestamp == other.timestamp && pressure == other.pressure &&
+           error == other.error;
+  }
+
+  bool operator!=(const AirLoadingData &other) const {
+    return !(*this == other);
+  }
 };
 #pragma pack(pop)
 

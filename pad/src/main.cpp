@@ -172,7 +172,7 @@ void addWaterLoadingDataToQueue(const WaterLoadingData &data) {
   packet.type = PadDataPacket::WATER_LOADING_DATA;
   packet.data.waterLoadingData = data;
   if (!padDataQueue.enqueue(packet)) {
-    Serial.println("Queue is full. Dropping water loading data.");
+    // Serial.println("Queue is full. Dropping water loading data.");
   }
 }
 
@@ -182,7 +182,7 @@ void addAirLoadingDataToQueue(const AirLoadingData &data) {
   packet.type = PadDataPacket::AIR_LOADING_DATA;
   packet.data.airLoadingData = data;
   if (!padDataQueue.enqueue(packet)) {
-    Serial.println("Queue is full. Dropping air loading data.");
+    // Serial.println("Queue is full. Dropping air loading data.");
   }
 }
 
@@ -267,15 +267,26 @@ void loop() {
       float currentAirPressure = airLoadingData.pressure;
 
       // Detect if pressure exceeds threshold for 3 seconds
-      if (currentAirPressure >= 690.0) {
+      if (currentAirPressure >= 580.0) {
         if (millis() - maxPressureTimestamp > 3000) {
           // Target air pressure reached for 3 seconds. Now closing valve.
           launchState = READY_TO_LAUNCH;
           stopAirFlow();
-        } else {
-          maxPressureTimestamp =
-              millis(); // Reset timestamp if pressure is still high
         }
+      } else {
+        maxPressureTimestamp =
+            millis(); // Reset timestamp if pressure no longer exceeds threshold
+      }
+      if (currentAirPressure > targetAirPressure) {
+        launchState =
+            READY_TO_LAUNCH; // If pressure exceeds target, ready to launch
+        stopAirFlow();
+      }
+    } else if (launchState == READY_TO_LAUNCH) {
+      if (airLoadingData.pressure >= targetAirPressure) {
+        stopAirFlow();
+      } else {
+        fillAir(); // If not enough pressure, continue filling air
       }
     }
 
@@ -377,10 +388,6 @@ void fillAir() {
   // Starts to fill the rocket with air.
 
   // Doesn't close the cancel_pin as it should already be closed.
-  if (launchState != FILLED_WATER) {
-    Serial.println("Water hasn't been filled yet !");
-    return;
-  }
 
   // Reset maxPressureTimestamp before starting air filling
   maxPressureTimestamp = millis();
@@ -494,6 +501,7 @@ void onI2CReceive(int numBytes) {
   } else if (strncmp(start, "fill_air", 8) == 0) {
     if (launchState == FILLED_WATER) {
       targetAirPressure = atof(start + 9);
+      targetAirPressure = constrain(targetAirPressure, 0.0, 585.0);
 
       fillAir();
     } else {

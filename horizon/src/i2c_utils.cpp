@@ -69,6 +69,7 @@ void handleFlightDataChunk(uint8_t *chunk, int bytesRead,
     }
     state.previousFlightData = state.currentFlightData;
     state.currentFlightData = state.flightDataReceived;
+    onFlightDataUpdate();       // Notify about new flight data
     state.flightDataOffset = 0; // Ready for next packet
   }
 }
@@ -143,6 +144,8 @@ void handlePadDataChunk(uint8_t *chunk, int bytesRead,
   }
 
   state.hasReceivedLoadingData = true;
+
+  onLoadingDataUpdate(); // Notify about new loading data
 }
 
 // Requests a chunk of pad data from the pad over I2C

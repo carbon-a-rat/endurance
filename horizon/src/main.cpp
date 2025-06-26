@@ -15,22 +15,16 @@
 #include <functional>
 
 // Core Endurance library
+#include "queue/enqueue_functions.h"
+#include "queue/process_queue.h"
+#include "queue/queue_logic.h"
 #include <EnduranceConfig.h>
 #include <core.h>
 
 // Global state structures
-FlightDataState flightDataState;
-LoadingDataState loadingDataState; // Holds the state for loading data
 DataRateCounters dataRateCounters = {0, 0, 0, 0, 0};
-PocketbaseState pocketbaseState;
-
-// NTP client setup
-WiFiUDP ntpUdp;
-NTPClient ntpClient(ntpUdp, "pool.ntp.org", 0,
-                    60000); // NTP client for time synchronization
 
 // Pocketbase connection
-PocketbaseArduino pocketbaseConnection(DEATH_STAR_POCKETBASE_HOST);
 
 // Debug utils
 
@@ -51,82 +45,32 @@ void debugSendCommandToPad() {
     command.trim();
     if (command.length() > 0) {
       sendCommandToPad(command);
+      sendCommandToGateway(command); // Also send to gateway for debugging
     }
   }
 }
-
-void launchControlCallback(PocketbaseState &pocketbaseState) {
-  Serial.println("Launch control callback triggered.");
-  if (loadingDataState.launchState == STAND_BY &&
-      pocketbaseState.launchRecord["record"]["should_load"].as<bool>()) {
-    float waterVolumicPercentage =
-        pocketbaseState.launchRecord["record"]["water_volumic_percentage"]
-            .as<float>();
-    Serial.print("Water volumic percentage: ");
-    Serial.println(waterVolumicPercentage);
-    float rocketVolume;
-    String serializedRocketRecord =
-        pocketbaseConnection.collection("rockets").getOne(
-            pocketbaseState.launchRecord["record"]["rocket"]
-                .as<String>()
-                .c_str(),
-            nullptr, "volume");
-    DynamicJsonDocument rocketDoc(1024);
-    DeserializationError error =
-        deserializeJson(rocketDoc, serializedRocketRecord);
-    if (!error) {
-      pocketbaseState.rocketRecord = rocketDoc;
-      rocketVolume = pocketbaseState.rocketRecord["volume"].as<float>();
-      Serial.println(pocketbaseState.rocketRecord.as<String>());
-      Serial.print("Rocket volume: ");
-      Serial.println(rocketVolume);
-    } else {
-      Serial.println("Failed to deserialize rocket record JSON");
-      rocketVolume = 0.0;
-    }
-    String command =
-        "fill_water " + String(waterVolumicPercentage * rocketVolume, 2);
-    sendCommandToPad(command);
-    Serial.println("Water loading command sent: " + command);
-  } else if (loadingDataState.launchState == FILLED_WATER &&
-             pocketbaseState.launchRecord["record"]["should_load"].as<bool>()) {
-    float airPressure =
-        pocketbaseState.launchRecord["record"]["pressure"].as<float>();
-    String command = "fill_air " + String(airPressure, 2);
-    sendCommandToPad(command);
-    Serial.println("Air loading command sent: " + command);
-  } else if (loadingDataState.launchState == READY_TO_LAUNCH &&
-             pocketbaseState.launchRecord["record"]["should_launch"]
-                 .as<bool>()) {
-    String command = "launch";
-    sendCommandToPad(command);
-    sendCommandToGateway("GO");
-    Serial.println("Launch command sent");
-  } else if (loadingDataState.launchState != STAND_BY &&
-             pocketbaseState.launchRecord["record"]["should_cancel"]
-                 .as<bool>()) {
-    String command = "cancel";
-    sendCommandToPad(command);
-    sendCommandToGateway("RESET");
-    Serial.println("Launch cancel command sent");
-  } else {
-    Serial.println("No action needed for launch control.");
-  }
-}
-
-struct PocketbaseHeartbeatTaskParams {
-  PocketbaseState &pocketbaseState;
-  PocketbaseArduino &pocketbaseConnection;
-  NTPClient &ntpClient;
-};
 
 void pocketbaseHeartbeatTask(void *pvParameters) {
   Serial.println("Pocketbase Heartbeat Task started."); // Debug print
 
   while (true) {
     if (pocketbaseState.isConnected) {
-      Serial.println("Sending heartbeat..."); // Debug print
-      heartbeatPocketbase(pocketbaseConnection, pocketbaseState, ntpClient);
+      Heartbeat heartbeat;
+
+      // Protect ntpClient access with the mutex
+      if (xSemaphoreTake(ntpClientMutex, portMAX_DELAY) == pdTRUE) {
+        heartbeat.timestamp = ntpClient.getEpochTime();
+        xSemaphoreGive(ntpClientMutex);
+      } else {
+        Serial.println("Failed to take NTP client mutex.");
+        continue; // Skip this iteration if mutex acquisition fails
+      }
+      if (xSemaphoreTake(requestQueueMutex, portMAX_DELAY) == pdTRUE) {
+        enqueueHeartbeat(heartbeat); // Enqueue heartbeat data
+        xSemaphoreGive(requestQueueMutex);
+      } else {
+        Serial.println("Failed to take request queue mutex for heartbeat.");
+      }
     } else {
       Serial.println(
           "Pocketbase is not connected. Skipping heartbeat."); // Debug print
@@ -135,9 +79,6 @@ void pocketbaseHeartbeatTask(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(5000)); // Delay for heartbeat interval
   }
 }
-
-// Declare a mutex for I2C bus access
-SemaphoreHandle_t i2cMutex;
 
 void gatewayLinkTask(void *pvParameters) {
   while (true) {
@@ -165,37 +106,179 @@ void padLinkTask(void *pvParameters) {
   }
 }
 
-void setupTasks() {
-  xTaskCreatePinnedToCore(pocketbaseHeartbeatTask, // Task function
-                          "PocketbaseHeartbeat",   // Task name
-                          8192,                    // Stack size
-                          NULL,                    // Task parameters
-                          2,                       // Priority
-                          NULL,                    // Task handle
-                          1);                      // Core ID
+int deathStarLinkTaskFrequency = 2; // Frequency in Hz
+int deathStarLinkTaskInterval =
+    1000 / deathStarLinkTaskFrequency; // Interval in milliseconds
 
-  xTaskCreatePinnedToCore(gatewayLinkTask, "GatewayLink", 2048, NULL, 1, NULL,
+void deathStarLinkTask(void *pvParameters) {
+  Serial.println("Death Star Link Task started."); // Debug print
+  while (true) {
+
+    // Take the mutex before accessing the I2C bus
+    String batch;
+    if (xSemaphoreTake(requestQueueMutex, portMAX_DELAY) == pdTRUE) {
+      batch = processQueueBatch(
+          20); // Process up to 20 requests at a time (reduced from 50)
+      xSemaphoreGive(requestQueueMutex);
+    } else {
+      Serial.println(
+          "Failed to take request queue mutex for batch processing.");
+      vTaskDelay(
+          pdMS_TO_TICKS(deathStarLinkTaskInterval)); // Wait before retrying
+      continue; // Skip sending batch if mutex acquisition fails
+    }
+
+    Serial.print("Batch size: ");
+    Serial.println(batch.length());
+    if (!batch.isEmpty()) {
+      // Check batch size before sending
+      if (batch.length() > 2000) {
+        Serial.print("WARNING: Large batch size: ");
+        Serial.println(batch.length());
+      }
+
+      // Send the batch to Pocketbase
+      Serial.println("Task heap memory: " +
+                     String(uxTaskGetStackHighWaterMark(NULL))); // Debug print
+
+      if (pocketbaseState.isConnected) {
+        if (xSemaphoreTake(uploadPocketbaseMutex, portMAX_DELAY) == pdTRUE) {
+          pocketbaseUploadConnection.batch(batch);
+          xSemaphoreGive(uploadPocketbaseMutex);
+        } else {
+          Serial.println("Failed to take upload Pocketbase mutex.");
+        }
+      }
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(
+        deathStarLinkTaskInterval)); // Delay for batch processing interval
+  }
+}
+
+void commandQueuesTask(void *pvParameters) {
+  while (true) {
+    // Process commands from the pad command queue
+    String padCommand = padCommandQueue.dequeue();
+    if (!padCommand.isEmpty()) {
+      // Send the command to the pad
+      Serial.println("Sending command to pad: " + padCommand);
+      if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE) {
+        sendCommandToPad(padCommand);
+        xSemaphoreGive(i2cMutex);
+      } else {
+        Serial.println("Failed to take I2C mutex for sending command to pad.");
+      }
+    }
+
+    // Process commands from the gateway command queue
+    String gatewayCommand = gatewayCommandQueue.dequeue();
+    if (!gatewayCommand.isEmpty()) {
+      // Send the command to the gateway
+      Serial.println("Sending command to gateway: " + gatewayCommand);
+      if (xSemaphoreTake(i2cMutex, portMAX_DELAY) == pdTRUE) {
+        sendCommandToGateway(gatewayCommand);
+        xSemaphoreGive(i2cMutex);
+      } else {
+        Serial.println(
+            "Failed to take I2C mutex for sending command to gateway.");
+      }
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(100)); // Adjust delay as needed
+  }
+}
+
+void setupTasks() {
+  Serial.println("Setting up tasks...");
+  /*Serial.print("Free Heap before task setup: ");
+  Serial.print(ESP.getFreeHeap() / 1024);
+  Serial.println(" KB");*/
+  /*xTaskCreatePinnedToCore(pocketbaseHeartbeatTask, "PocketbaseHeartbeat",
+     4096, NULL, 2, NULL, 1); // Task function*/
+  /*Serial.println("Pocketbase heartbeat task created on core 1"); // Debug
+  print Serial.print("Free Heap after hearthbeat task creation: ");
+  Serial.print(ESP.getFreeHeap() / 1024);
+  Serial.println(" KB");*/
+  xTaskCreatePinnedToCore(gatewayLinkTask, "GatewayLink", 16 * 1024, NULL, 1,
+                          NULL,
                           0); // Create gateway link task on core 1
-  xTaskCreatePinnedToCore(padLinkTask, "PadLink", 2048, NULL, 1, NULL,
+  /*Serial.println("Gateway link task created on core 0"); // Debug print
+  Serial.print("Free Heap after gateway link task creation: ");
+  Serial.print(ESP.getFreeHeap() / 1024);
+  Serial.println(" KB");*/
+  xTaskCreatePinnedToCore(padLinkTask, "PadLink", 16 * 1024, NULL, 1, NULL,
                           0); // Create pad link task on core 1
+  /*Serial.println("Pad link task created on core 0"); // Debug print
+  Serial.print("Free Heap after pad link task creation: ");
+  Serial.print(ESP.getFreeHeap() / 1024);
+  Serial.println(" KB");*/
+  /*xTaskCreatePinnedToCore(deathStarLinkTask, "DeathStarLink", 64 * 1024, NULL,
+                          1, NULL,
+                          1); // Create Death Star link task on core 0;*/
+  /*Serial.println("Death Star link task created on core 1"); // Debug print
+  Serial.print("Free Heap after Death Star link task creation: ");
+  Serial.print(ESP.getFreeHeap() / 1024);
+
+  Serial.println(" KB");*/
+  /*xTaskCreatePinnedToCore(stateTask, "StateTask", 1024 * 32, NULL, 1, NULL,
+                          0);                     // Create state task on core 0
+  Serial.println("State task created on core 0"); // Debug print
+  Serial.print("Free Heap after state task creation: ");
+  Serial.print(ESP.getFreeHeap() / 1024);
+  Serial.println(" KB");*/
+  /*xTaskCreatePinnedToCore(launcherDataTask, "LauncherDataTask", 8192, NULL, 1,
+                          NULL,
+                          1); // Create launcher data task on core 1
+
+  Serial.println("Launcher data task created on core 1"); // Debug print
+  Serial.print("Free Heap after launcher data task creation: ");
+  Serial.print(ESP.getFreeHeap() / 1024);
+  Serial.println(" KB");*/
+  xTaskCreatePinnedToCore(commandQueuesTask, "CommandQueues", 8192, NULL, 1,
+                          NULL,
+                          0); // Create command queues task on core 0
+  Serial.println("Command queues task created on core 0"); // Debug print
+  Serial.print("Free Heap after command queues task creation: ");
+  Serial.print(ESP.getFreeHeap() / 1024);
+  Serial.println(" KB");
 }
 
 void setup() {
   Serial.begin(115200);
   initI2C();
-  initWiFi([]() {},                     // disconnectedCallback
+  /*initWiFi([]() {},                     // disconnectedCallback
            []() {},                     // connectedCallback
            []() { initNtp(ntpClient); } // gotIPCallback
-  );
-  pocketbaseState.launchControlCallback = launchControlCallback;
-  initPocketbase(pocketbaseConnection, pocketbaseState);
+  );*/
 
-  // Ensure the mutex is created before initializing tasks
+  Serial.println("Horizon starting...");
+  Serial.print("Free Heap: ");
+  Serial.print(ESP.getFreeHeap() / 1024);
+  Serial.println(" KB");
+
+  /*pocketbaseState.launchControlCallback =
+      onLaunchUpdateCallback; // Set the callback
+
+  initPocketbase();
+
+  Serial.println("Pocketbase initialized.");
+  Serial.print("Free Heap after Pocketbase init: ");
+  Serial.print(ESP.getFreeHeap() / 1024);
+  Serial.println(" KB");
+*/
+  // Ensure the mutexes are created before initializing tasks
   i2cMutex = xSemaphoreCreateMutex();
-  if (i2cMutex == NULL) {
-    Serial.println("Failed to create I2C mutex");
+  requestQueueMutex = xSemaphoreCreateMutex();
+  ntpClientMutex = xSemaphoreCreateMutex(); // Create NTP client mutex
+  uploadPocketbaseMutex =
+      xSemaphoreCreateMutex(); // Create upload Pocketbase mutex
+
+  if (i2cMutex == NULL || requestQueueMutex == NULL || ntpClientMutex == NULL ||
+      uploadPocketbaseMutex == NULL) {
+    Serial.println("Failed to create mutexes!");
     while (true) {
-      delay(1000); // Halt execution if mutex creation fails
+      delay(1000); // Wait indefinitely if mutex creation fails
     }
   }
 
@@ -210,12 +293,12 @@ void loop() {
 
   if (dataRateTimer.expired()) {
     printI2CDataRates(dataRateCounters);
-    // printFlightData(flightDataState.currentFlightData);
+    //  printFlightData(flightDataState.currentFlightData);
     printAirLoadingData(loadingDataState.currentAirLoadingData);
     printWaterLoadingData(loadingDataState.currentWaterLoadingData);
     String launchState;
-    switch (loadingDataState.launchState) // Print launch state
-    {
+    switch (loadingDataState.launchState // Print launch state
+    ) {
     case STAND_BY:
       launchState = "Standby";
       break;
@@ -249,19 +332,53 @@ void loop() {
     }
     Serial.print("Launch State: ");
     Serial.println(launchState);
-
+    /*
     // Monitor FreeRTOS tasks
-    Serial.print("FreeRTOS Tasks: ");
-    Serial.print(uxTaskGetNumberOfTasks());
-    Serial.print(", Free Heap: ");
-    Serial.print(
-        uxTaskGetStackHighWaterMark(NULL)); // Get stack high water mark
-    Serial.print(", Free Memory: ");
-    Serial.println(ESP.getFreeHeap()); // Get free heap memory
+    UBaseType_t taskCount = uxTaskGetNumberOfTasks();
+    Serial.print("Number of tasks: ");
+    Serial.println(taskCount);
+
+    // Print free heap
+    Serial.print("Free Heap: ");
+    Serial.print(ESP.getFreeHeap() / 1024);
+    Serial.println(" KB");
+
+    // Print current task stack usage (simplified approach)
+    Serial.println("Current Task Stack Usage:");
+    Serial.print("Loop task free stack: ");
+    Serial.print(uxTaskGetStackHighWaterMark(NULL));
+    Serial.println(" bytes");
+
+    // Print system information
+    Serial.print("Total Heap Size: ");
+    Serial.print(ESP.getHeapSize() / 1024);
+    Serial.println(" KB");
+
+    Serial.print("Minimum Free Heap: ");
+    Serial.print(ESP.getMinFreeHeap() / 1024);
+    Serial.println(" KB");
+
+    Serial.print("Free PSRAM: ");
+    Serial.print(ESP.getFreePsram() / 1024);
+    Serial.println(" KB");
   }
+    */
+    /*// Protect ntpClient update with the mutex
+    if (xSemaphoreTake(ntpClientMutex, portMAX_DELAY) == pdTRUE) {
+      ntpClient.update(); // Update NTP time
+      xSemaphoreGive(ntpClientMutex);
+    } else {
+      Serial.println("Failed to take NTP client mutex for update.");
+    }*/
 
-  ntpClient.update(); // Update NTP time
+    // debugSendCommandToGateway();
+    debugSendCommandToPad();
 
-  // debugSendCommandToGateway();
-  debugSendCommandToPad();
+    /*if (xSemaphoreTake(uploadPocketbaseMutex, portMAX_DELAY) == pdTRUE) {
+      pocketbaseUploadConnection.update_subscription();
+      xSemaphoreGive(uploadPocketbaseMutex);
+    } else {
+      Serial.println("Failed to take upload Pocketbase mutex for processing.");
+    }*/
+  }
 }
